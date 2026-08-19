@@ -101,7 +101,7 @@ ADAPTERS.append(RubyAdapter())
 
 ## Ecosystems planned but not yet implemented
 
-PHP, Elixir, Swift, Dart, Scala, C/C++ (CMake/Bazel/Buck), Nix. Until a
+Elixir, Dart, Scala, C/C++ (CMake/Bazel/Buck), Nix. Until a
 dedicated adapter exists, `GenericAdapter` (`adapters/generic.py`) still
 provides useful signal for these via Makefile/Taskfile/justfile/Dockerfile/
 compose detection -- see "Graceful degradation" in the main README.

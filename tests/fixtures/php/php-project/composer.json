@@ -1,0 +1,9 @@
+{
+    "name": "example/php-project",
+    "require": {
+        "php": ">=8.1"
+    },
+    "scripts": {
+        "test": "phpunit"
+    }
+}

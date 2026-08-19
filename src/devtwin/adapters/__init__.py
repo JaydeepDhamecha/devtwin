@@ -14,7 +14,10 @@ from devtwin.adapters.go import GoAdapter
 from devtwin.adapters.jvm import JvmAdapter
 from devtwin.adapters.node import NodeAdapter
 from devtwin.adapters.python import PythonAdapter
+from devtwin.adapters.php import PhpAdapter
+from devtwin.adapters.ruby import RubyAdapter
 from devtwin.adapters.rust import RustAdapter
+from devtwin.adapters.swift import SwiftAdapter
 
 # Order matters only for tie-breaking display; detection confidence drives
 # which ecosystem is "primary".
@@ -25,6 +28,9 @@ ADAPTERS: list[EcosystemAdapter] = [
     GoAdapter(),
     RustAdapter(),
     DotnetAdapter(),
+    SwiftAdapter(),
+    RubyAdapter(),
+    PhpAdapter(),
 ]
 
 GENERIC_ADAPTER = GenericAdapter()

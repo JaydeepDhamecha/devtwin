@@ -1,10 +1,10 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-06-18/server.schema.json",
-  "name": "io.github.YOUR_GITHUB_USERNAME/devtwin",
+  "name": "io.github.JaydeepDhamecha/devtwin",
   "description": "Development-environment intelligence for AI coding agents: project detection, runtime/dependency/service state, drift, and evidence-based failure diagnosis.",
   "status": "active",
   "repository": {
-    "url": "https://github.com/YOUR_GITHUB_USERNAME/devtwin-mcp",
+    "url": "https://github.com/JaydeepDhamecha/devtwin",
     "source": "github"
   },
   "version_detail": {

@@ -10,3 +10,5 @@ dist/
 build/
 .env
 .DS_Store
+.gradle/
+.mcp.json

@@ -24,6 +24,106 @@ installed. DevTwin gives an agent the same signal a senior engineer would
 gather by hand -- `node --version`, `git status`, `lsof -i :5432`,
 `docker ps` -- as structured tool calls instead of guesswork.
 
+## Benefits
+
+- **Fewer wrong diagnoses.** Without DevTwin, an AI agent debugging a
+  failure can only read code and guess -- it will often propose a code fix
+  for what's actually a Node version mismatch or a stopped database.
+  DevTwin gives it ground truth instead of a guess.
+- **One call instead of many.** A single `dev_health` call bundles ~10
+  underlying checks (runtime versions, dependency state, services, ports,
+  Git) into one structured, scored result -- instead of an agent making a
+  dozen separate shell round-trips and parsing raw CLI output each time.
+- **Same check every time.** The exact checks per ecosystem (Gradle
+  wrapper vs. system Gradle, `.nvmrc` vs. `package.json` engines, ...) are
+  encoded once, so the diagnosis is consistent across sessions instead of
+  depending on what an agent happens to think to run.
+- **Safer than handing an agent a shell.** No arbitrary command execution,
+  no destructive operations, ever -- see [Security model](#security-model).
+- **Secrets never touched.** Environment variables that look secret are
+  checked for presence only; values are never read or returned -- see
+  [Privacy model](#privacy-model).
+- **Works even where the agent has no shell.** MCP clients without a Bash
+  tool (some IDE assistants, restricted agents) get this capability at all,
+  not zero capability.
+
+## Honest tradeoffs
+
+DevTwin is not a daily-use tool for a stable environment -- nobody needs to
+re-check "is Postgres running" on every function they write. It's a
+**break-glass tool**: high value at specific moments (fresh clone, a build
+that mysteriously fails, right before a commit), and idle the rest of the
+time. That's the intended usage pattern, not a shortcoming.
+
+Two real costs worth knowing before you add it:
+
+- **Token overhead, always paid.** Every tool an MCP server exposes adds
+  its schema (name, description, parameters) to every request in a
+  session, whether or not it's ever called. DevTwin's 10 tools cost
+  roughly 800-1200 tokens of fixed overhead per turn. On a session that
+  never touches an environment issue, that's pure cost with no benefit.
+- **It only pays for itself when actually invoked.** One real diagnostic
+  session (a `dev_health` call replacing five or six raw shell round-trips)
+  easily nets positive. A session that never hits an environment question
+  doesn't recoup the fixed cost.
+
+**Practical implication:** prefer registering DevTwin per-project
+(`.mcp.json` in the repo, or `claude mcp add devtwin ... --scope project`)
+over a blanket user-wide install across every session -- see
+[MCP client configuration](#mcp-client-configuration).
+
+If Claude Code (or another client with shell access) is already reading a
+repo you fully control and rarely has environment drift, you may not need
+DevTwin there at all -- raw Bash covers the same ground, just less safely
+and less consistently. DevTwin earns its keep on: shared/onboarding repos,
+less-trusted or shell-less agent setups, and multi-ecosystem monorepos
+where "what do I even check" is itself the hard part.
+
+## With vs. without DevTwin: a worked example
+
+Say you ask an agent "why does `npm test` fail?" and the real cause is a
+Node version mismatch plus Postgres not running.
+
+**Without DevTwin** (agent using raw Bash), the agent has to guess the
+right sequence, one command at a time:
+
+```
+cat package.json                      # spot "engines": {"node": ">=20"}
+node --version                        # v16.20.0 -- mismatch found
+grep -i "pg\|postgres" package.json   # spot the Postgres dependency
+cat .env                              # risk: may print a real secret into context
+lsof -i :5432                         # nothing listening
+docker ps                             # check if it's in a container instead
+```
+
+Six round-trips, an investigation path the agent had to invent, and a real
+chance of a secret value leaking into the conversation at step 4.
+
+**With DevTwin**, one call:
+
+```
+dev_health()
+```
+
+```json
+{
+  "status": "error",
+  "summary": "2 issues found: runtime drift, service down",
+  "issues": [
+    "Node 16.20.0 installed, project requires >=20 (from package.json engines)",
+    "Postgres required (found in docker-compose.yml) but not running on 5432"
+  ],
+  "recommendations": [
+    "nvm install 20 && nvm use 20",
+    "docker compose up -d postgres"
+  ]
+}
+```
+
+Same conclusion. One call instead of six, no possibility of leaking a
+secret, and the exact same curated check every time instead of a freehand
+investigation that varies session to session.
+
 ## Example questions this unlocks
 
 - "Check my development environment."
@@ -59,6 +159,9 @@ a new language adapter: [`docs/adapters.md`](docs/adapters.md).
 | Go | `go.mod`, `go.sum`, `go.work` | `go` | go modules |
 | Rust | `Cargo.toml`, `rust-toolchain[.toml]` | `rustc` | cargo |
 | .NET | `*.csproj`/`*.fsproj`/`*.vbproj`, `*.sln`, `global.json` | `dotnet` | NuGet |
+| Swift (iOS/macOS) | `Package.swift`, `*.xcodeproj`, `*.xcworkspace`, `Podfile` | `swift`, `xcodebuild` | SPM, CocoaPods |
+| Ruby | `Gemfile`, `*.gemspec`, `.ruby-version` | `ruby` | Bundler |
+| PHP | `composer.json` | `php` | Composer |
 | Generic (fallback) | `Makefile`, `Taskfile.yml`, `justfile`, `Dockerfile`, compose files | -- | make/task/just/docker |
 
 Any project not matching a specific adapter still gets useful output from
@@ -109,6 +212,51 @@ Verify tool discovery with the MCP Inspector:
 ```bash
 npx @modelcontextprotocol/inspector uv run devtwin
 ```
+
+## Using it on another project (for other developers)
+
+DevTwin is one binary; point any number of projects at the same install --
+no per-project reinstall needed. Two scopes, pick based on how often you
+want it active:
+
+**Project scope (recommended default)** -- only loads in this repo. Drop
+a `.mcp.json` in the project root:
+
+```json
+{
+  "mcpServers": {
+    "devtwin": {
+      "command": "/absolute/path/to/devtwin-mcp/.venv/bin/devtwin"
+    }
+  }
+}
+```
+
+or, with the Claude Code CLI:
+
+```bash
+claude mcp add devtwin /absolute/path/to/devtwin-mcp/.venv/bin/devtwin --scope project
+```
+
+**User scope** -- loads in every project you open, on every session:
+
+```bash
+claude mcp add devtwin /absolute/path/to/devtwin-mcp/.venv/bin/devtwin --scope user
+```
+
+Given the fixed per-turn token cost of any loaded MCP server (see
+[Honest tradeoffs](#honest-tradeoffs)), user scope makes sense once you're
+reaching for DevTwin across most of your repos; project scope is the
+better default otherwise.
+
+Restart the client (or reconnect the MCP server) after adding it, then
+just ask normal questions -- see
+[Example questions this unlocks](#example-questions-this-unlocks). In a
+monorepo mixing platforms (e.g. an Android + iOS + backend repo), point
+questions at the specific subfolder rather than the repo root, e.g. "check
+the health of the `android/` app" -- `dev_detect` at the root of a mixed
+repo will report every ecosystem it finds, which is useful once but noisy
+for a targeted check.
 
 ## Tool reference
 
@@ -179,7 +327,7 @@ for a template.
 
 ## Roadmap
 
-- Additional ecosystem adapters: Ruby, PHP, Elixir, Swift, Dart, Scala,
+- Additional ecosystem adapters: Elixir, Dart, Scala,
   C/C++ (CMake/Bazel/Buck), Nix (see `docs/adapters.md` for how to add one)
 - Additional service detectors (MySQL/MariaDB, MongoDB, Kafka, RabbitMQ)
 - Richer drift comparison against CI configuration (e.g. GitHub Actions

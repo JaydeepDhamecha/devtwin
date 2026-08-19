@@ -49,6 +49,19 @@ ALLOWED_EXECUTABLES = {
     "rustc",
     # dotnet
     "dotnet",
+    # swift
+    "swift",
+    "xcodebuild",
+    "pod",
+    # ruby
+    "ruby",
+    "bundle",
+    "rake",
+    # php
+    "php",
+    "composer",
+    "phpunit",
+    "vendor/bin/phpunit",
     # docker
     "docker",
     "docker-compose",
