@@ -462,7 +462,10 @@ See [`docs/development.md`](docs/development.md) for the full workflow.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). Adding a new language ecosystem
 is the most common contribution -- see [`docs/adapters.md`](docs/adapters.md)
-for a template.
+for a template, or [`src/devtwin/adapters/swift.py`](src/devtwin/adapters/swift.py),
+[`ruby.py`](src/devtwin/adapters/ruby.py), and
+[`php.py`](src/devtwin/adapters/php.py) for real, merged examples to
+model yours after.
 
 ## Roadmap
 

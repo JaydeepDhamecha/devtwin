@@ -21,6 +21,16 @@ All four must pass. CI runs the same checks.
 See `docs/adapters.md` -- it has a full template and checklist (adapter
 file, registry entry, allowlist entry, fixtures, tests).
 
+For a real, merged example to model yours after (not just the template),
+see the three most recently added adapters:
+[`src/devtwin/adapters/swift.py`](src/devtwin/adapters/swift.py) (dual
+detection -- SPM *and* Xcode, tools-version parsing),
+[`src/devtwin/adapters/ruby.py`](src/devtwin/adapters/ruby.py) (version
+file convention, `.ruby-version`), and
+[`src/devtwin/adapters/php.py`](src/devtwin/adapters/php.py) (JSON
+manifest parsing, `composer.json`). Each has matching fixtures under
+`tests/fixtures/` and tests under `tests/unit/test_<name>_adapter.py`.
+
 ## Guidelines
 
 - No new dependency without a clear reason stdlib/an existing dependency
