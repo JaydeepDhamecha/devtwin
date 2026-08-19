@@ -100,13 +100,27 @@ class JvmAdapter(EcosystemAdapter):
 
         return runtimes
 
+    def _wrapper_invocation(self, root: Path, unix_name: str, win_name: str, fallback: str) -> str:
+        """Pick the right wrapper command for the current OS, without assuming
+        both `unix_name` and `win_name` were committed side by side."""
+        if platform.system() == "Windows" and (root / win_name).exists():
+            return win_name
+        if (root / unix_name).exists():
+            return f"./{unix_name}"
+        return fallback
+
     def inspect_build(self, root: Path) -> list[RuntimeInfo]:
         tools: list[RuntimeInfo] = []
 
         if self._uses_gradle(root):
             required = self._gradle_wrapper_version(root)
-            wrapper = root / ("gradlew.bat" if platform.system() == "Windows" else "gradlew")
-            if wrapper.exists():
+            gradlew_sh, gradlew_bat = root / "gradlew", root / "gradlew.bat"
+            wrapper = (
+                gradlew_bat
+                if (platform.system() == "Windows" and gradlew_bat.exists())
+                else gradlew_sh
+            )
+            if gradlew_sh.exists() or gradlew_bat.exists():
                 tools.append(
                     RuntimeInfo(
                         name="gradle-wrapper",
@@ -140,8 +154,11 @@ class JvmAdapter(EcosystemAdapter):
                     )
 
         if self._uses_maven(root):
-            wrapper = root / ("mvnw.cmd" if platform.system() == "Windows" else "mvnw")
-            if wrapper.exists():
+            mvnw_sh, mvnw_cmd = root / "mvnw", root / "mvnw.cmd"
+            wrapper = (
+                mvnw_cmd if (platform.system() == "Windows" and mvnw_cmd.exists()) else mvnw_sh
+            )
+            if mvnw_sh.exists() or mvnw_cmd.exists():
                 tools.append(
                     RuntimeInfo(name="maven-wrapper", presence=Presence.DETECTED, path=str(wrapper))
                 )
@@ -187,21 +204,21 @@ class JvmAdapter(EcosystemAdapter):
     def inspect_tests(self, root: Path) -> list[str]:
         commands = []
         if self._uses_gradle(root):
-            wrapper = "./gradlew" if platform.system() != "Windows" else "gradlew.bat"
-            commands.append(f"{wrapper} test" if (root / "gradlew").exists() else "gradle test")
+            commands.append(
+                f"{self._wrapper_invocation(root, 'gradlew', 'gradlew.bat', 'gradle')} test"
+            )
         if self._uses_maven(root):
-            wrapper = "./mvnw" if platform.system() != "Windows" else "mvnw.cmd"
-            commands.append(f"{wrapper} test" if (root / "mvnw").exists() else "mvn test")
+            commands.append(f"{self._wrapper_invocation(root, 'mvnw', 'mvnw.cmd', 'mvn')} test")
         return commands
 
     def inspect_build_commands(self, root: Path) -> list[str]:
         commands = []
         if self._uses_gradle(root):
-            wrapper = "./gradlew" if (root / "gradlew").exists() else "gradle"
-            commands.append(f"{wrapper} build")
+            commands.append(
+                f"{self._wrapper_invocation(root, 'gradlew', 'gradlew.bat', 'gradle')} build"
+            )
         if self._uses_maven(root):
-            wrapper = "./mvnw" if (root / "mvnw").exists() else "mvn"
-            commands.append(f"{wrapper} package")
+            commands.append(f"{self._wrapper_invocation(root, 'mvnw', 'mvnw.cmd', 'mvn')} package")
         return commands
 
     def health_checks(self, root: Path, runtimes: list[RuntimeInfo]) -> list[HealthIssue]:

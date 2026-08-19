@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from devtwin.services.generic import detect_generic_services
@@ -8,7 +9,10 @@ from devtwin.services.redis import RedisDetector
 
 
 def test_postgres_required_via_env_var(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", "postgres://localhost/x")
+    # Isolate from ambient env vars: some CI runner images (notably Windows)
+    # ship with PGPASSWORD or similar already set, which would otherwise win
+    # the first-match-in-os.environ race against our injected DATABASE_URL.
+    monkeypatch.setattr(os, "environ", {"DATABASE_URL": "postgres://localhost/x"})
     detector = PostgresDetector()
     info = detector.detect(tmp_path, set())
     assert info.required is True
