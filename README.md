@@ -265,7 +265,7 @@ DevTwin checks to answer it, and the test/build command it recognizes for
 |---|---|---|---|
 | Python | "Is my Python version right for this repo?" | `python`/`python3` vs. `.python-version` or `pyproject.toml [project.requires-python]`; uv/pip/poetry/pipenv + lockfile | `pytest`, `ruff check .`, `mypy .` |
 | Node.js | "Why does `npm test` fail?" | `node` vs. `.nvmrc`/`.node-version`/`package.json engines`; npm/pnpm/yarn/bun + lockfile | `npm test` (or `pnpm test`/`yarn test`/`bun test`), `<mgr> run lint` |
-| JVM (Java + Kotlin) | "Why won't my Kotlin project build?" | `java`/`kotlinc` version; Gradle wrapper version vs. installed; Maven wrapper | `./gradlew test`, `./mvnw test` |
+| JVM (Java + Kotlin + Android) | "Why won't my Android app build after a fresh clone?" | `java`/`kotlinc` version; Gradle wrapper version vs. installed; Maven wrapper; **on Android projects specifically:** `ANDROID_HOME`/`ANDROID_SDK_ROOT`, or `local.properties`' `sdk.dir` and whether that path actually exists | `./gradlew test`, `./mvnw test` |
 | Go | "Is my Go version correct for this repo?" | `go` vs. the version required in `go.mod` | `go test ./...`, `go build ./...` |
 | Rust | "Why does `cargo build` fail?" | `rustc` vs. `rust-toolchain[.toml]` channel | `cargo test` |
 | .NET | "Why does `dotnet build` fail?" | `dotnet` SDK presence and version | `dotnet test` |
