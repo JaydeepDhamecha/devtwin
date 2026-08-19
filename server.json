@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-06-18/server.schema.json",
+  "name": "io.github.YOUR_GITHUB_USERNAME/devtwin",
+  "description": "Development-environment intelligence for AI coding agents: project detection, runtime/dependency/service state, drift, and evidence-based failure diagnosis.",
+  "status": "active",
+  "repository": {
+    "url": "https://github.com/YOUR_GITHUB_USERNAME/devtwin-mcp",
+    "source": "github"
+  },
+  "version_detail": {
+    "version": "0.1.0"
+  },
+  "packages": [
+    {
+      "registry_name": "pypi",
+      "name": "devtwin-mcp",
+      "version": "0.1.0",
+      "runtime_hint": "uvx",
+      "package_arguments": [],
+      "environment_variables": []
+    }
+  ]
+}

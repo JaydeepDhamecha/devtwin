@@ -1,0 +1,3 @@
+#!/bin/sh
+# fixture placeholder gradle wrapper script
+echo "gradle wrapper fixture"
