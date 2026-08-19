@@ -71,6 +71,43 @@ safety guarantees and consistent, structured output, not brand-new
 access. That's also why it isn't free -- see [Token cost](#token-cost)
 for what connecting it actually costs, and when it's worth it.
 
+**A few more questions worth asking before adopting this:**
+
+**"Isn't this just a `doctor` script (`make doctor`, `bin/setup`) with extra
+steps?"** Conceptually, yes -- plenty of mature repos already hand-write
+one. DevTwin's difference is that most repos *don't* have one, writing a
+good one per-ecosystem is real work, its output is structured JSON an
+agent can reason over rather than plain text a human reads, and the same
+10 tools work identically across every repo instead of a bespoke script
+per project with its own conventions and blind spots.
+
+**"Does this only work with Claude / Claude Code?"** No. DevTwin speaks
+the standard Model Context Protocol -- any MCP-compatible client (Claude
+Desktop, Cursor, Windsurf, etc.) can connect to it the same way. Nothing
+about it is Claude-specific.
+
+**"Is this safe to depend on -- is it actively maintained?"** It's
+[Alpha status](pyproject.toml) and a young project -- read the code (it's
+short) before trusting it in a workflow you depend on, same as you would
+any new dev-tooling dependency.
+
+**"Could it suggest something wrong, or run a bad recommendation
+automatically?"** No tool here executes a `recommendations` string --
+those are just text for the agent (or you) to read and decide on.
+`dev_check` is the only tool that executes anything, and only commands it
+recognized itself against a fixed allowlist -- see
+[Security model](#security-model).
+
+**"Does it phone home or send telemetry anywhere?"** No. Zero network
+calls of its own -- see [Local-first architecture](#local-first-architecture).
+
+**"I don't want an MCP server running *any* commands on my machine."**
+9 of the 10 tools are pure read-only (file reads, version checks). Only
+`dev_check` executes anything, and only commands DevTwin itself
+recognized from project files, checked against an allowlist, with
+`shell=False` and a timeout -- see [Security model](#security-model) for
+exactly what that does and doesn't allow.
+
 ## Benefits
 
 - **Fewer wrong diagnoses.** Without DevTwin, an agent debugging a failure
