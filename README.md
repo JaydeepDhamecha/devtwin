@@ -17,6 +17,7 @@ cloud backend, and without ever exposing secret values to the model.
 ## Contents
 
 - [Why DevTwin exists](#why-devtwin-exists)
+- [FAQ: Claude CLI already has a shell, so why an MCP at all?](#faq-claude-cli-already-has-a-shell-so-why-an-mcp-at-all)
 - [Benefits](#benefits)
 - [Token cost](#token-cost)
 - [Honest tradeoffs](#honest-tradeoffs)
@@ -47,6 +48,28 @@ cloud backend, and without ever exposing secret values to the model.
 - DevTwin gives an agent the same signal a senior engineer would gather by
   hand -- `node --version`, `git status`, `lsof -i :5432`, `docker ps` --
   as structured tool calls instead of guesswork.
+
+## FAQ: Claude CLI already has a shell, so why an MCP at all?
+
+This is usually the first question a developer asks, and it's a fair one.
+In a client like Claude Code that already has a Bash tool, you can just
+ask it to run `node --version`, `docker ps`, `lsof -i :5432`, etc.
+directly -- no MCP server required. **The gap DevTwin closes isn't "can
+this be done at all" -- it's these:**
+
+| Without DevTwin (raw Bash) | With DevTwin |
+|---|---|
+| The agent *can* run anything, including destructive commands, even unintentionally. | Zero arbitrary execution -- a fixed allowlist of read-only/safe checks only. See [Security model](#security-model). |
+| Picks a different investigation each session; can miss ecosystem edge cases (Gradle wrapper vs. system Gradle, `.nvmrc` vs. `package.json` engines). | The same curated, tested check every time, for every ecosystem. |
+| A command like `cat .env` can pull a real secret value straight into the conversation. | Structurally never returns secret values -- presence/absence only. See [Privacy model](#privacy-model). |
+| Only works in clients that have a shell tool at all (not Claude Desktop, some IDE plugins). | Works in any MCP client, shell or no shell. |
+| ~6 separate round-trips to diagnose one failure. | 1 call. See the [worked example](#with-vs-without-devtwin-a-worked-example). |
+
+**Honest answer for Claude CLI specifically:** since it already has Bash,
+DevTwin's win there is smaller than "capability you didn't have" -- it's
+safety guarantees and consistent, structured output, not brand-new
+access. That's also why it isn't free -- see [Token cost](#token-cost)
+for what connecting it actually costs, and when it's worth it.
 
 ## Benefits
 
