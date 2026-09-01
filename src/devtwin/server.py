@@ -450,5 +450,54 @@ def dev_precommit(workspace: str = ".") -> dict[str, Any]:
     )
 
 
+@mcp.tool()
+def dev_health_all(workspace: str = ".") -> dict[str, Any]:
+    """Scan subdirectories for ecosystems and run health checks on all of them.
+    Returns a consolidated summary table with ecosystem, key tools, versions, and status."""
+    root = _resolve(workspace)
+    if not root.exists():
+        return _result(Status.ERROR, f"Workspace '{workspace}' does not exist.")
+
+    ecosystems_to_check = []
+    common_dirs = ["android", "ios", "frontend", "backend", "app", "web", "mobile"]
+
+    for subdir in common_dirs:
+        path = root / subdir
+        if path.is_dir():
+            profile = detect_project(str(path))
+            if profile.ecosystems:
+                ecosystems_to_check.append((subdir, path, profile.ecosystems))
+
+    if not ecosystems_to_check:
+        return _result(Status.OK, "No recognized ecosystems found in subdirectories.", data={"ecosystems": []})
+
+    results = []
+    for dir_name, dir_path, ecosystems in ecosystems_to_check:
+        report = compute_health(str(dir_path))
+        results.append({
+            "directory": dir_name,
+            "ecosystems": ecosystems,
+            "health_score": report.health_score,
+            "status": report.status.value,
+            "summary": report.project_summary,
+            "runtime_summary": report.runtime_summary,
+            "issues": [i.to_dict() for i in report.issues],
+            "recommendations": report.recommendations,
+        })
+
+    status = Status.OK if all(r["status"] == "ok" for r in results) else Status.WARNING
+    summary = f"Checked {len(results)} ecosystem(s): " + ", ".join(
+        f"{r['directory']} ({r['health_score']}/100)" for r in results
+    )
+
+    return _result(
+        status,
+        summary,
+        data={"ecosystems": results},
+        issues=[issue for r in results for issue in r["issues"]],
+        recommendations=[rec for r in results for rec in r["recommendations"]],
+    )
+
+
 def main() -> None:
     mcp.run()
