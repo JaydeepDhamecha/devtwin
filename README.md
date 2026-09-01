@@ -520,7 +520,7 @@ All tools return `{status, summary, data, issues, recommendations}`.
 |---|---|---|
 | `dev_detect` | read-only | Fast, file-based project/ecosystem detection with evidence. |
 | `dev_health` | read-only | Full 0-100 health score combining runtime, dependency, service, and Git state. |
-| `dev_health_all` | read-only | Scan subdirectories for multiple ecosystems; run health checks on all and return consolidated summary. Perfect for monorepos. |
+| `dev_health_all` | read-only | Scan subdirectories for multiple ecosystems; run comprehensive health checks on all with detailed per-ecosystem reports: health score, runtime versions, dependency state, services, issues (build errors, conflicts, misconfigurations), and recommendations. Perfect for monorepos. |
 | `dev_drift` | read-only | Compares required vs. actually-installed runtime/tool versions. |
 | `dev_explain_failure` | read-only | Diagnoses a given error message into ranked, evidence-backed root causes. |
 | `dev_project_info` | read-only | Detailed project inspection: runtimes, build tools, commands, OS, Git. |
@@ -529,6 +529,25 @@ All tools return `{status, summary, data, issues, recommendations}`.
 | `dev_check` | safe execution | Runs recognized test/lint commands (e.g. `pytest`, `./gradlew test`) with a timeout. |
 | `dev_prepare` | plans only | Produces a preparation plan for a freshly-cloned repo; never executes it. |
 | `dev_precommit` | read-only | Commit-readiness summary: Git state, health, staged-secret-looking files. |
+
+### `dev_health_all` detailed output
+
+For monorepos with multiple ecosystems, `dev_health_all` returns per-ecosystem details:
+
+Each ecosystem report includes:
+- **health_score** (0-100): Overall ecosystem health
+- **status**: ok/warning/error
+- **runtime_summary**: Actual vs. required versions (Java/Swift/Node/Python)
+- **dependency_summary**: Lockfile state, conflicts, missing packages
+- **service_summary**: Required services (Postgres, Redis, etc.) and running status
+- **issues**: Detailed problems found:
+  - Build errors (Gradle, xcodebuild, npm, pip)
+  - Dependency conflicts
+  - Version mismatches
+  - Missing SDKs or tools
+- **recommendations**: Specific fixes for each issue
+
+**Example:** For Android, you get Gradle build errors, missing SDK paths, Java version mismatches. For iOS, you get CocoaPods errors, Swift version issues. For React, you get npm conflicts. For Python, you get pip version conflicts.
 
 ## Security model
 
