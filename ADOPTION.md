@@ -13,9 +13,17 @@
 
 #### Step 1: Install DevTwin (one-time, per developer)
 
+Developers pick one:
+
 ```bash
+# Option A: uv (fastest)
 uv pip install devtwin-mcp
-# or
+
+# Option B: pipx (simplest)
+brew install pipx
+pipx install devtwin-mcp
+
+# Option C: pip (standard)
 pip install devtwin-mcp
 ```
 
@@ -108,9 +116,13 @@ See [`README.md#roadmap`](README.md#roadmap).
 
 ## For individual developers
 
-**Install** (one time):
+**Install** (one time, pick one):
 ```bash
-uv pip install devtwin-mcp
+uv pip install devtwin-mcp          # fastest
+# or
+pipx install devtwin-mcp            # simplest
+# or
+pip install devtwin-mcp             # standard
 ```
 
 **Add to your MCP client** (Claude Code / Claude Desktop / Cursor):

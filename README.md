@@ -8,23 +8,30 @@ It detects project technology, checks installed runtime versions against what a 
 
 ## Quick Start (2 minutes)
 
+**1. Install** (pick one):
 ```bash
-# 1. Install
-uv pip install devtwin-mcp  # or: pip install devtwin-mcp
+uv pip install devtwin-mcp        # fastest
+# or
+pipx install devtwin-mcp          # simplest
+# or
+pip install devtwin-mcp           # standard
+```
 
-# 2. Add to your MCP client (Claude Code, Claude Desktop, Cursor, etc.)
-# In your client's MCP config, add:
-# {
-#   "mcpServers": {
-#     "devtwin": {
-#       "command": "devtwin"
-#     }
-#   }
-# }
+**2. Add to your MCP client** (Claude Code, Claude Desktop, Cursor, etc.):
+```json
+{
+  "mcpServers": {
+    "devtwin": {
+      "command": "devtwin"
+    }
+  }
+}
+```
 
-# 3. Try it
-# Ask Claude: "Check my development environment"
-# or "Why does `npm test` fail?"
+**3. Try it:**
+```
+Ask Claude: "Check my development environment"
+or "Why does `npm test` fail?"
 ```
 
 **That's it.** Next time you ask Claude about your project, it'll have access to real environment data instead of guessing.
@@ -356,11 +363,29 @@ project.
 
 ## Installation
 
+Pick one method:
+
+**Option 1: `uv` (fastest, recommended)**
 ```bash
 uv pip install devtwin-mcp
-# or
+```
+
+**Option 2: `pipx` (simplest, no venv needed)**
+```bash
+brew install pipx  # macOS
+pipx install devtwin-mcp
+```
+
+**Option 3: `pip` (standard, may need venv on newer macOS)**
+```bash
+pip install devtwin-mcp
+# or with venv:
+python3 -m venv ~/.devtwin-venv
+source ~/.devtwin-venv/bin/activate
 pip install devtwin-mcp
 ```
+
+All methods install the `devtwin` binary globally so it works in any MCP client.
 
 For local development against a clone of this repo, see
 [`docs/development.md`](docs/development.md).

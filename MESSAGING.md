@@ -25,7 +25,12 @@ Benefits:
 • Works everywhere (Claude Code, Claude Desktop, Cursor, etc.)
 • Consistent (same checks across Node, Python, Go, JVM, Rust, .NET, etc.)
 
-Get started: `uv pip install devtwin-mcp` + add to your MCP config
+Get started: Install once (pick one):
+- `uv pip install devtwin-mcp` (fastest)
+- `pipx install devtwin-mcp` (simplest)
+- `pip install devtwin-mcp` (standard)
+
+Then add to your MCP config and restart Claude Code.
 
 Try it: Ask Claude "Check my development environment" or "Why does `npm test` fail?"
 
@@ -48,7 +53,10 @@ All at once. No more parsing terminal output. No more secrets in conversation.
 
 **Try it:** Ask Claude "Check my environment" or "Why doesn't my build work?"
 
-Install: `uv pip install devtwin-mcp` (one time)
+**Install** (pick one, one time):
+- `uv pip install devtwin-mcp`
+- `pipx install devtwin-mcp`
+- `pip install devtwin-mcp`
 
 Then add to your MCP config and you're done. Questions? [ADOPTION.md](ADOPTION.md)
 ```
