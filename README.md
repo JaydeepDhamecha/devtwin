@@ -307,6 +307,8 @@ a freehand investigation that varies session to session.
 - "Does my environment drift from what this repository expects?"
 - "What should I run before I commit?"
 - "I just cloned this repo -- what do I need to do to get it running?"
+- "Check all ecosystems in this monorepo" (uses `dev_health_all` for Android/iOS/React/Python)
+- "Which of my backend/frontend/mobile apps is ready to ship?"
 
 ## Per-language examples
 
@@ -518,6 +520,7 @@ All tools return `{status, summary, data, issues, recommendations}`.
 |---|---|---|
 | `dev_detect` | read-only | Fast, file-based project/ecosystem detection with evidence. |
 | `dev_health` | read-only | Full 0-100 health score combining runtime, dependency, service, and Git state. |
+| `dev_health_all` | read-only | Scan subdirectories for multiple ecosystems; run health checks on all and return consolidated summary. Perfect for monorepos. |
 | `dev_drift` | read-only | Compares required vs. actually-installed runtime/tool versions. |
 | `dev_explain_failure` | read-only | Diagnoses a given error message into ranked, evidence-backed root causes. |
 | `dev_project_info` | read-only | Detailed project inspection: runtimes, build tools, commands, OS, Git. |
