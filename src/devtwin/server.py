@@ -452,8 +452,9 @@ def dev_precommit(workspace: str = ".") -> dict[str, Any]:
 
 @mcp.tool()
 def dev_health_all(workspace: str = ".") -> dict[str, Any]:
-    """Scan subdirectories for ecosystems and run health checks on all of them.
-    Returns a consolidated summary table with ecosystem, key tools, versions, and status."""
+    """Scan subdirectories for ecosystems and run comprehensive health checks on all of them.
+    Returns detailed per-ecosystem reports including: health score, runtime versions, dependency state,
+    required services, issues, and recommendations. Perfect for monorepos with multiple tech stacks."""
     root = _resolve(workspace)
     if not root.exists():
         return _result(Status.ERROR, f"Workspace '{workspace}' does not exist.")
@@ -479,10 +480,14 @@ def dev_health_all(workspace: str = ".") -> dict[str, Any]:
             "ecosystems": ecosystems,
             "health_score": report.health_score,
             "status": report.status.value,
-            "summary": report.project_summary,
+            "project_summary": report.project_summary,
             "runtime_summary": report.runtime_summary,
+            "dependency_summary": report.dependency_summary,
+            "service_summary": report.service_summary,
             "issues": [i.to_dict() for i in report.issues],
+            "issue_count": len(report.issues),
             "recommendations": report.recommendations,
+            "recommendation_count": len(report.recommendations),
         })
 
     # Aggregate status: ERROR if any subdirectory has ERROR, WARNING if any has WARNING, else OK
