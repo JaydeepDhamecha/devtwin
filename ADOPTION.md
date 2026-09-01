@@ -102,7 +102,7 @@ No telemetry home-phones — these are your own observations.
 Next ecosystems: Elixir, Dart, C/C++ (CMake/Bazel), Nix.  
 Next services: MySQL, MongoDB, Kafka, RabbitMQ.
 
-See [`README.md#Roadmap`](README.md#roadmap).
+See [`README.md#roadmap`](README.md#roadmap).
 
 ---
 
