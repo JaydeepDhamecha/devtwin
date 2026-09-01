@@ -469,7 +469,7 @@ def dev_health_all(workspace: str = ".") -> dict[str, Any]:
                 ecosystems_to_check.append((subdir, path, profile.ecosystems))
 
     if not ecosystems_to_check:
-        return _result(Status.OK, "No recognized ecosystems found in subdirectories.", data={"ecosystems": []})
+        return _result(Status.UNKNOWN, "No recognized ecosystems found in subdirectories.", data={"ecosystems": []})
 
     results = []
     for dir_name, dir_path, ecosystems in ecosystems_to_check:
@@ -485,7 +485,13 @@ def dev_health_all(workspace: str = ".") -> dict[str, Any]:
             "recommendations": report.recommendations,
         })
 
-    status = Status.OK if all(r["status"] == "ok" for r in results) else Status.WARNING
+    # Aggregate status: ERROR if any subdirectory has ERROR, WARNING if any has WARNING, else OK
+    if any(r["status"] == "error" for r in results):
+        status = Status.ERROR
+    elif any(r["status"] == "warning" for r in results):
+        status = Status.WARNING
+    else:
+        status = Status.OK
     summary = f"Checked {len(results)} ecosystem(s): " + ", ".join(
         f"{r['directory']} ({r['health_score']}/100)" for r in results
     )
