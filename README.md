@@ -22,6 +22,8 @@ cloud backend, and without ever exposing secret values to the model.
 - **Secret-proof:** Never exposes API keys, passwords, or secrets in output
 - **Works everywhere:** Any MCP client (Claude Code, Claude Desktop, Cursor, etc.), not just clients with a shell tool
 
+**See the side-by-side comparison:** [MCP vs raw Claude](https://claude.ai/code/artifact/4a85ce00-e3c0-45c7-8fe3-4dcf61b75ff8)
+
 ## Contents
 
 - [Why DevTwin exists](#why-devtwin-exists)
