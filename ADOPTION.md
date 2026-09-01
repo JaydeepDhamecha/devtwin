@@ -13,17 +13,24 @@
 
 #### Step 1: Install DevTwin (one-time, per developer)
 
+**Prerequisites:** Python 3.10+ (usually already on macOS/Linux)
+
 Developers pick one:
 
 ```bash
 # Option A: uv (fastest)
+brew install uv              # if not already installed
 uv pip install devtwin-mcp
 
 # Option B: pipx (simplest)
-brew install pipx
+brew install pipx            # if not already installed
 pipx install devtwin-mcp
 
 # Option C: pip (standard)
+pip install devtwin-mcp
+# or with venv:
+python3 -m venv ~/.devtwin-venv
+source ~/.devtwin-venv/bin/activate
 pip install devtwin-mcp
 ```
 

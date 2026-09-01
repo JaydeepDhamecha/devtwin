@@ -363,16 +363,28 @@ project.
 
 ## Installation
 
-Pick one method:
+**Prerequisites:**
+- macOS/Linux (Windows: WSL)
+- Python 3.10+
+- One package manager: `uv`, `pipx`, or `pip`
+
+**Pick one method:**
 
 **Option 1: `uv` (fastest, recommended)**
 ```bash
+# Install uv first (if not already installed)
+brew install uv
+
+# Then install devtwin
 uv pip install devtwin-mcp
 ```
 
 **Option 2: `pipx` (simplest, no venv needed)**
 ```bash
-brew install pipx  # macOS
+# Install pipx first (if not already installed)
+brew install pipx
+
+# Then install devtwin
 pipx install devtwin-mcp
 ```
 
