@@ -399,6 +399,35 @@ pip install devtwin-mcp
 
 All methods install the `devtwin` binary globally so it works in any MCP client.
 
+### Troubleshooting installation
+
+**"zsh: command not found: uv"**
+```bash
+brew install uv
+uv pip install devtwin-mcp
+```
+
+**"error: externally-managed-environment"** (on newer macOS)
+Use `pipx` (simplest solution):
+```bash
+brew install pipx
+pipx install devtwin-mcp
+```
+
+**"pip: command not found"**
+Use `pipx` or `uv` (above), or create a venv:
+```bash
+python3 -m venv ~/.devtwin-venv
+source ~/.devtwin-venv/bin/activate
+pip install devtwin-mcp
+```
+
+**Verify installation:**
+```bash
+devtwin --version
+# Should print: devtwin X.Y.Z
+```
+
 For local development against a clone of this repo, see
 [`docs/development.md`](docs/development.md).
 
