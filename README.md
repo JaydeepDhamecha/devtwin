@@ -14,6 +14,14 @@ running, checks ports and Git state, and turns all of that into structured,
 evidence-based diagnostics -- without ever sending your environment to a
 cloud backend, and without ever exposing secret values to the model.
 
+### Why use DevTwin instead of just asking Claude to run bash commands?
+
+- **Safe:** No arbitrary command execution, only allowlisted environment checks
+- **Consistent:** Same ecosystem detection and health checks across all projects
+- **Efficient:** One structured MCP call (~800 tokens) replaces 5–6 scattered bash commands (~1500–2000 tokens)
+- **Secret-proof:** Never exposes API keys, passwords, or secrets in output
+- **Works everywhere:** Any MCP client (Claude Code, Claude Desktop, Cursor, etc.), not just clients with a shell tool
+
 ## Contents
 
 - [Why DevTwin exists](#why-devtwin-exists)
@@ -63,7 +71,7 @@ this be done at all" -- it's these:**
 | Picks a different investigation each session; can miss ecosystem edge cases (Gradle wrapper vs. system Gradle, `.nvmrc` vs. `package.json` engines). | The same curated, tested check every time, for every ecosystem. |
 | A command like `cat .env` can pull a real secret value straight into the conversation. | Structurally never returns secret values -- presence/absence only. See [Privacy model](#privacy-model). |
 | Only works in clients that have a shell tool at all (not Claude Desktop, some IDE plugins). | Works in any MCP client, shell or no shell. |
-| ~6 separate round-trips to diagnose one failure. | 1 call. See the [worked example](#with-vs-without-devtwin-a-worked-example). |
+| ~6 separate round-trips to diagnose one failure; ~1500–2000 tokens per check (5–6 bash commands, scattered output). | 1 call; ~800–1200 tokens per check. See the [worked example](#with-vs-without-devtwin-a-worked-example). |
 
 **Honest answer for Claude CLI specifically:** since it already has Bash,
 DevTwin's win there is smaller than "capability you didn't have" -- it's
