@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -c \"import json,sys,pathlib; d=json.load(sys.stdin); sid=d.get('session_id','unknown'); pathlib.Path(f'/tmp/.claude-devtwin-edited-{sid}').touch()\" 2>/dev/null || true"
+            "command": "python3 -c \"import json,sys,pathlib,tempfile; d=json.load(sys.stdin); sid=d.get('session_id','unknown'); (pathlib.Path(tempfile.gettempdir()) / f'.claude-devtwin-edited-{sid}').touch()\""
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -c \"import json,sys,pathlib\nd=json.load(sys.stdin)\nsid=d.get('session_id','unknown')\nf=pathlib.Path(f'/tmp/.claude-devtwin-edited-{sid}')\nif f.exists():\n    f.unlink()\n    print(json.dumps({'decision':'block','reason':'Files were edited this turn. Run /code-review on the changes before finishing.'}))\" 2>/dev/null"
+            "command": "python3 -c \"import json,sys,pathlib,tempfile; d=json.load(sys.stdin); sid=d.get('session_id','unknown'); f=pathlib.Path(tempfile.gettempdir())/f'.claude-devtwin-edited-{sid}'; f.exists() and (f.unlink(), print(json.dumps({'decision':'block','reason':'Files were edited this turn. Run /code-review on the changes before finishing.'})))\""
           }
         ]
       }
