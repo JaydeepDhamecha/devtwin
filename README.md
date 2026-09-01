@@ -1,28 +1,63 @@
 # DevTwin MCP
 
-**Give AI coding agents a live, structured understanding of your local
-development environment.**
+**Give AI coding agents a live, structured understanding of your local development environment.**
 
-DevTwin is a Model Context Protocol (MCP) server that answers one central
-question for an AI coding agent: *why is this developer's environment
-different, broken, or unhealthy?*
+DevTwin is a Model Context Protocol (MCP) server that answers one central question for an AI coding agent: *why is this developer's environment different, broken, or unhealthy?*
 
-It detects project technology, checks installed runtime versions against
-what a project actually requires, inspects dependency and lockfile state,
-finds required local services (Postgres, Redis, ...) and whether they're
-running, checks ports and Git state, and turns all of that into structured,
-evidence-based diagnostics -- without ever sending your environment to a
-cloud backend, and without ever exposing secret values to the model.
+It detects project technology, checks installed runtime versions against what a project actually requires, inspects dependency and lockfile state, finds required local services (Postgres, Redis, ...) and whether they're running, checks ports and Git state, and turns all of that into structured, evidence-based diagnostics -- without ever sending your environment to a cloud backend, and without ever exposing secret values to the model.
+
+## Quick Start (2 minutes)
+
+```bash
+# 1. Install
+uv pip install devtwin-mcp  # or: pip install devtwin-mcp
+
+# 2. Add to your MCP client (Claude Code, Claude Desktop, Cursor, etc.)
+# In your client's MCP config, add:
+# {
+#   "mcpServers": {
+#     "devtwin": {
+#       "command": "devtwin"
+#     }
+#   }
+# }
+
+# 3. Try it
+# Ask Claude: "Check my development environment"
+# or "Why does `npm test` fail?"
+```
+
+**That's it.** Next time you ask Claude about your project, it'll have access to real environment data instead of guessing.
 
 ### Why use DevTwin instead of just asking Claude to run bash commands?
 
-- **Safe:** No arbitrary command execution, only allowlisted environment checks
-- **Consistent:** Same ecosystem detection and health checks across all projects
-- **Efficient:** One structured MCP call (~800 tokens) replaces 5–6 scattered bash commands (~1500–2000 tokens)
-- **Secret-proof:** Never exposes API keys, passwords, or secrets in output
-- **Works everywhere:** Any MCP client (Claude Code, Claude Desktop, Cursor, etc.), not just clients with a shell tool
+**The problem:** Claude can run bash, but developers lose:
+- **Secrets** — environment variable reads leak API keys and passwords into conversation
+- **Parsing hell** — Claude has to guess the right 5–6 commands to run, parsing messy output each time
+- **No safety** — anything goes, even destructive commands
+- **Inconsistent** — every project handles environment checks differently (or not at all)
+
+**DevTwin solves it:**
+- **No secrets ever leak** — environment checks report presence only, values never read
+- **One call, one answer** — `dev_health()` bundles 10+ checks into structured JSON
+- **Safety by design** — only allowlisted, read-only operations
+- **Same check every time** — exact same detection logic across all projects
+
+**Token efficiency:** ~800 tokens (one call + schema) vs. ~1500–2000 tokens (5–6 bash commands + parsing).
 
 **See the side-by-side comparison:** [MCP vs raw Claude](https://claude.ai/code/artifact/4a85ce00-e3c0-45c7-8fe3-4dcf61b75ff8)
+
+## What makes DevTwin different
+
+| Feature | Raw Bash | DevTwin |
+|---------|----------|---------|
+| Safety | Any command possible | Only safe, allowlisted checks |
+| Secrets | Risk of leaking keys/passwords | Never reads or returns secret values |
+| Consistency | Different per project | Same checks across all projects |
+| Tokens | 5–6 commands, ~1500–2000 tokens | 1 call, ~800–1200 tokens (after schema tax) |
+| Works in Claude Code | ✓ (has shell) | ✓ (any MCP client) |
+| Works in Claude Desktop | ✗ (no shell) | ✓ |
+| Works in Cursor / Windsurf | (conditional) | ✓ |
 
 ## Contents
 
@@ -43,6 +78,7 @@ cloud backend, and without ever exposing secret values to the model.
 - [Security model](#security-model)
 - [Privacy model](#privacy-model)
 - [Local-first architecture](#local-first-architecture)
+- [Adoption & team setup](#adoption--team-setup)
 - [Development](#development)
 - [Contributing](#contributing)
 - [Roadmap](#roadmap)
@@ -455,6 +491,14 @@ Full details: [`docs/security.md`](docs/security.md).
   local commands it inspects (`git`, `docker`, language toolchains).
 - Everything it reports comes from files and processes already on the
   machine it runs on.
+
+## Adoption & team setup
+
+**For team leads:** See [`ADOPTION.md`](ADOPTION.md) for per-project setup, FAQ, and how to announce DevTwin to your team.
+
+**Copy-paste messaging:** See [`MESSAGING.md`](MESSAGING.md) for Slack, email, GitHub, and internal docs templates.
+
+**Key idea:** Register DevTwin per-project in `.mcp.json` (so the fixed token tax only applies to sessions that use it). Individual developers install once (`uv pip install devtwin-mcp`), and every project they work on gets it automatically.
 
 ## Development
 
