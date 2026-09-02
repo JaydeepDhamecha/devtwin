@@ -286,7 +286,7 @@ def dev_check(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
         recognized.extend(a.test_commands)
 
     to_run_full = recognized[:MAX_AUTO_CHECK_COMMANDS] if not run else recognized
-    results, recognized, rejected = _run_recognized_commands(
+    results, _, rejected = _run_recognized_commands(
         path, to_run_full, CHECK_TIMEOUT_SECONDS, run=run
     )
 

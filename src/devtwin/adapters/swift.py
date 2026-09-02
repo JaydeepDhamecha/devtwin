@@ -146,7 +146,14 @@ class SwiftAdapter(EcosystemAdapter):
             scheme = self._detect_scheme(root)
             if scheme:
                 workspace = next(root.glob("*.xcworkspace"), None)
-                target = ["-workspace", workspace.name] if workspace else ["-project", next(root.glob("*.xcodeproj")).name]
+                if workspace:
+                    target = ["-workspace", workspace.name]
+                else:
+                    project = next(root.glob("*.xcodeproj"), None)
+                    if project:
+                        target = ["-project", project.name]
+                    else:
+                        return commands
                 commands.append(
                     f"xcodebuild test -scheme {scheme} -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' {' '.join(target)}"
                 )
@@ -160,7 +167,14 @@ class SwiftAdapter(EcosystemAdapter):
             scheme = self._detect_scheme(root)
             if scheme:
                 workspace = next(root.glob("*.xcworkspace"), None)
-                target = ["-workspace", workspace.name] if workspace else ["-project", next(root.glob("*.xcodeproj")).name]
+                if workspace:
+                    target = ["-workspace", workspace.name]
+                else:
+                    project = next(root.glob("*.xcodeproj"), None)
+                    if project:
+                        target = ["-project", project.name]
+                    else:
+                        return commands
                 commands.append(
                     f"xcodebuild build -scheme {scheme} -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO {' '.join(target)}"
                 )
