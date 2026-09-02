@@ -308,6 +308,7 @@ a freehand investigation that varies session to session.
 - "What should I run before I commit?"
 - "I just cloned this repo -- what do I need to do to get it running?"
 - "Check all ecosystems in this monorepo" (uses `dev_health_all` for Android/iOS/React/Python)
+- "I just changed backend code — do Android, iOS, and React still build?" (uses `dev_build_all`)
 - "Which of my backend/frontend/mobile apps is ready to ship?"
 
 ## Per-language examples
@@ -527,6 +528,8 @@ All tools return `{status, summary, data, issues, recommendations}`.
 | `dev_dependencies` | read-only | Per-ecosystem dependency/lockfile state. |
 | `dev_services` | read-only | Required local services (Postgres, Redis, compose services) and their running state. |
 | `dev_check` | safe execution | Runs recognized test/lint commands (e.g. `pytest`, `./gradlew test`) with a timeout. |
+| `dev_build` | safe execution | Runs recognized build/compile commands (e.g. `npm run build`, `./gradlew build`, `xcodebuild build`) with a longer timeout. |
+| `dev_build_all` | safe execution | Scan subdirectories for multiple ecosystems and run builds on all; returns per-ecosystem build results. Perfect for monorepos to verify backend changes don't break Android, iOS, and frontend builds. |
 | `dev_prepare` | plans only | Produces a preparation plan for a freshly-cloned repo; never executes it. |
 | `dev_precommit` | read-only | Commit-readiness summary: Git state, health, staged-secret-looking files. |
 

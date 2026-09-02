@@ -31,6 +31,39 @@ class SwiftAdapter(EcosystemAdapter):
     def _uses_xcode(self, root: Path) -> bool:
         return bool(list(root.glob("*.xcodeproj"))) or bool(list(root.glob("*.xcworkspace")))
 
+    def _detect_scheme(self, root: Path) -> str | None:
+        """Detect the first buildable scheme from xcodebuild -list -json.
+        Returns None if xcodebuild is missing, not executable, or no scheme found."""
+        import json
+
+        if not self._uses_xcode(root):
+            return None
+        xcodebuild_path = which("xcodebuild")
+        if xcodebuild_path is None:
+            return None
+        workspace = next(root.glob("*.xcworkspace"), None)
+        project = next(root.glob("*.xcodeproj"), None)
+        if not workspace and not project:
+            return None
+        args = [xcodebuild_path, "-list", "-json"]
+        if workspace:
+            args.extend(["-workspace", workspace.name])
+        elif project:
+            args.extend(["-project", project.name])
+        result = run_command(args, cwd=str(root), timeout=10)
+        if not result.available or result.returncode != 0:
+            return None
+        try:
+            data = json.loads(result.stdout)
+            schemes = data.get("project", {}).get("schemes") or data.get("workspace", {}).get(
+                "schemes"
+            )
+            if schemes and isinstance(schemes, list):
+                return schemes[0]  # ponytail: takes first scheme; explicit param if multi-target needed
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+        return None
+
     def _required_tools_version(self, root: Path) -> str | None:
         f = root / "Package.swift"
         if not f.exists():
@@ -106,12 +139,32 @@ class SwiftAdapter(EcosystemAdapter):
         ]
 
     def inspect_tests(self, root: Path) -> list[str]:
-        # `xcodebuild test` needs a -scheme we can't safely guess; only SPM's
-        # `swift test` is runnable without project-specific configuration.
-        return ["swift test"] if self._uses_spm(root) else []
+        commands = []
+        if self._uses_spm(root):
+            commands.append("swift test")
+        elif self._uses_xcode(root):
+            scheme = self._detect_scheme(root)
+            if scheme:
+                workspace = next(root.glob("*.xcworkspace"), None)
+                target = ["-workspace", workspace.name] if workspace else ["-project", next(root.glob("*.xcodeproj")).name]
+                commands.append(
+                    f"xcodebuild test -scheme {scheme} -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' {' '.join(target)}"
+                )
+        return commands
 
     def inspect_build_commands(self, root: Path) -> list[str]:
-        return ["swift build"] if self._uses_spm(root) else []
+        commands = []
+        if self._uses_spm(root):
+            commands.append("swift build")
+        elif self._uses_xcode(root):
+            scheme = self._detect_scheme(root)
+            if scheme:
+                workspace = next(root.glob("*.xcworkspace"), None)
+                target = ["-workspace", workspace.name] if workspace else ["-project", next(root.glob("*.xcodeproj")).name]
+                commands.append(
+                    f"xcodebuild build -scheme {scheme} -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO {' '.join(target)}"
+                )
+        return commands
 
     def health_checks(self, root: Path, runtimes: list[RuntimeInfo]) -> list[HealthIssue]:
         issues = []

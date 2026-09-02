@@ -22,8 +22,11 @@ async def test_all_tools_registered_via_mcp():
         "dev_dependencies",
         "dev_services",
         "dev_check",
+        "dev_build",
         "dev_prepare",
         "dev_precommit",
+        "dev_health_all",
+        "dev_build_all",
     }
     assert expected.issubset(names)
 
@@ -105,3 +108,16 @@ def test_dev_prepare_never_executes_and_classifies_steps():
 def test_dev_precommit_shape():
     result = server.dev_precommit(str(FIXTURES_ROOT))
     assert "git" in result["data"] or result["status"] == "unknown"
+
+
+def test_dev_build_shape():
+    result = server.dev_build(str(FIXTURES_ROOT / "node" / "npm-project"))
+    assert result["status"] in ("ok", "error", "unknown")
+    assert "recognized_commands" in result["data"]
+    assert "results" in result["data"]
+
+
+def test_dev_build_all_shape():
+    result = server.dev_build_all(str(FIXTURES_ROOT))
+    assert result["status"] in ("ok", "error", "unknown")
+    assert "ecosystems" in result["data"]

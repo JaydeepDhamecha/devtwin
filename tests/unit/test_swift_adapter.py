@@ -47,4 +47,40 @@ def test_required_tools_version_parsed(fixtures_root: Path):
 def test_inspect_tests_spm_only(fixtures_root: Path):
     adapter = SwiftAdapter()
     assert adapter.inspect_tests(fixtures_root / "swift" / "spm-project") == ["swift test"]
+    # iOS projects without a detectable scheme will return empty
     assert adapter.inspect_tests(fixtures_root / "swift" / "ios-project") == []
+
+
+def test_inspect_build_commands_spm(fixtures_root: Path):
+    adapter = SwiftAdapter()
+    assert adapter.inspect_build_commands(fixtures_root / "swift" / "spm-project") == ["swift build"]
+
+
+def test_inspect_build_commands_xcode_no_scheme(fixtures_root: Path):
+    adapter = SwiftAdapter()
+    # iOS projects without a detectable scheme will return empty
+    assert adapter.inspect_build_commands(fixtures_root / "swift" / "ios-project") == []
+
+
+def test_detect_scheme_with_mock(monkeypatch, fixtures_root: Path):
+    import json
+    from devtwin.core.models import CommandResult
+
+    adapter = SwiftAdapter()
+    mock_scheme_list = {
+        "project": {"schemes": ["MyApp", "MyAppTests"]},
+    }
+    mock_result = CommandResult(
+        executable="xcodebuild",
+        args=["-list", "-json"],
+        available=True,
+        returncode=0,
+        stdout=json.dumps(mock_scheme_list),
+        stderr="",
+    )
+    monkeypatch.setattr(
+        "devtwin.adapters.swift.run_command",
+        lambda *args, **kwargs: mock_result,
+    )
+    scheme = adapter._detect_scheme(fixtures_root / "swift" / "ios-project")
+    assert scheme == "MyApp"

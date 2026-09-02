@@ -57,6 +57,9 @@ SECRET_FILE_PATTERNS = (
 
 MAX_AUTO_CHECK_COMMANDS = 5
 CHECK_TIMEOUT_SECONDS = 120
+BUILD_TIMEOUT_SECONDS = 300
+
+COMMON_MONOREPO_DIRS = ["android", "ios", "frontend", "backend", "app", "web", "mobile"]
 
 
 def _result(
@@ -77,6 +80,43 @@ def _result(
 
 def _resolve(workspace: str) -> Path:
     return Path(workspace).expanduser().resolve()
+
+
+def _run_recognized_commands(
+    path: Path, commands: list[str], timeout: int, run: list[str] | None = None
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """Run recognized commands, respecting allowlist. Returns (results, recognized, rejected)."""
+    recognized: list[str] = commands
+    if run:
+        to_run = [c for c in run if c in recognized]
+        rejected = [c for c in run if c not in recognized]
+    else:
+        to_run = recognized
+        rejected = []
+
+    results: list[dict[str, Any]] = []
+    for command_str in to_run:
+        args = shlex.split(command_str)
+        if not args or not is_allowed_executable(args[0]) or is_dangerous(args):
+            results.append(
+                {
+                    "command": command_str,
+                    "executed": False,
+                    "reason": "not in DevTwin's allowlist of recognized commands",
+                }
+            )
+            continue
+        outcome: CommandResult = run_command(args, cwd=str(path), timeout=timeout)
+        results.append(
+            {
+                "command": command_str,
+                "executed": True,
+                "result": outcome.to_dict(),
+                "passed": outcome.available and outcome.returncode == 0,
+            }
+        )
+
+    return results, recognized, rejected
 
 
 @mcp.tool()
@@ -245,34 +285,10 @@ def dev_check(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
     for a in adapters:
         recognized.extend(a.test_commands)
 
-    if run:
-        to_run = [c for c in run if c in recognized]
-        rejected = [c for c in run if c not in recognized]
-    else:
-        to_run = recognized[:MAX_AUTO_CHECK_COMMANDS]
-        rejected = []
-
-    results: list[dict[str, Any]] = []
-    for command_str in to_run:
-        args = shlex.split(command_str)
-        if not args or not is_allowed_executable(args[0]) or is_dangerous(args):
-            results.append(
-                {
-                    "command": command_str,
-                    "executed": False,
-                    "reason": "not in DevTwin's allowlist of recognized check commands",
-                }
-            )
-            continue
-        outcome: CommandResult = run_command(args, cwd=str(path), timeout=CHECK_TIMEOUT_SECONDS)
-        results.append(
-            {
-                "command": command_str,
-                "executed": True,
-                "result": outcome.to_dict(),
-                "passed": outcome.available and outcome.returncode == 0,
-            }
-        )
+    to_run_full = recognized[:MAX_AUTO_CHECK_COMMANDS] if not run else recognized
+    results, recognized, rejected = _run_recognized_commands(
+        path, to_run_full, CHECK_TIMEOUT_SECONDS, run=run
+    )
 
     failed = [r for r in results if r.get("executed") and not r.get("passed")]
     status = Status.ERROR if failed else (Status.OK if results else Status.UNKNOWN)
@@ -451,6 +467,96 @@ def dev_precommit(workspace: str = ".") -> dict[str, Any]:
 
 
 @mcp.tool()
+def dev_build(workspace: str = ".", run: list[str] | None = None) -> dict[str, Any]:
+    """Run recognized project build/compile commands detected from project files,
+    e.g. `npm run build`, `./gradlew build`, `xcodebuild build`, `dotnet build`.
+    Only commands DevTwin itself recognized are ever executed (never an arbitrary string),
+    each with a timeout. Pass `run` to restrict to a subset of the recognized
+    commands (call dev_project_info first to see what's available)."""
+    ws = inspect_workspace(workspace)
+    if not ws.exists:
+        return _result(Status.ERROR, f"Workspace '{workspace}' does not exist.")
+    path = _resolve(workspace)
+    adapters = run_adapters(path)
+
+    recognized: list[str] = []
+    for a in adapters:
+        recognized.extend(a.build_commands)
+
+    results, recognized, rejected = _run_recognized_commands(
+        path, recognized, BUILD_TIMEOUT_SECONDS, run=run
+    )
+
+    failed = [r for r in results if r.get("executed") and not r.get("passed")]
+    status = Status.ERROR if failed else (Status.OK if results else Status.UNKNOWN)
+    return _result(
+        status,
+        f"Ran {len(results)} build(s), {len(failed)} failed."
+        if results
+        else "No recognized build commands were found for this project.",
+        data={"recognized_commands": recognized, "results": results, "rejected": rejected},
+    )
+
+
+@mcp.tool()
+def dev_build_all(workspace: str = ".") -> dict[str, Any]:
+    """Scan subdirectories for ecosystems and run comprehensive build checks on all of them.
+    Returns detailed per-ecosystem build results including: pass/fail status, build output,
+    and any compilation errors. Perfect for monorepos to verify backend changes don't break
+    Android, iOS, and frontend builds."""
+    root = _resolve(workspace)
+    if not root.exists():
+        return _result(Status.ERROR, f"Workspace '{workspace}' does not exist.")
+
+    ecosystems_to_check = []
+
+    for subdir in COMMON_MONOREPO_DIRS:
+        path = root / subdir
+        if path.is_dir():
+            profile = detect_project(str(path))
+            if profile.ecosystems:
+                ecosystems_to_check.append((subdir, path, profile.ecosystems))
+
+    if not ecosystems_to_check:
+        return _result(Status.UNKNOWN, "No recognized ecosystems found in subdirectories.", data={"ecosystems": []})
+
+    results = []
+    for dir_name, dir_path, ecosystems in ecosystems_to_check:
+        adapters = run_adapters(dir_path)
+        build_commands: list[str] = []
+        for a in adapters:
+            build_commands.extend(a.build_commands)
+        build_results, recognized, rejected = _run_recognized_commands(
+            dir_path, build_commands, BUILD_TIMEOUT_SECONDS
+        )
+        failed_builds = [r for r in build_results if r.get("executed") and not r.get("passed")]
+        build_status = Status.ERROR if failed_builds else (Status.OK if build_results else Status.UNKNOWN)
+        results.append({
+            "directory": dir_name,
+            "ecosystems": ecosystems,
+            "status": build_status.value,
+            "build_commands": recognized,
+            "build_results": build_results,
+            "passed_count": len([r for r in build_results if r.get("passed")]),
+            "failed_count": len(failed_builds),
+        })
+
+    status = Status.ERROR if any(r["status"] == "error" for r in results) else Status.OK
+    summary_parts: list[str] = []
+    for r in results:
+        passed = int(r["passed_count"]) if isinstance(r["passed_count"], int) else 0
+        failed = int(r["failed_count"]) if isinstance(r["failed_count"], int) else 0
+        summary_parts.append(f"{r['directory']} ({passed}/{passed + failed})")
+    summary = f"Built {len(results)} ecosystem(s): " + ", ".join(summary_parts)
+
+    return _result(
+        status,
+        summary,
+        data={"ecosystems": results},
+    )
+
+
+@mcp.tool()
 def dev_health_all(workspace: str = ".") -> dict[str, Any]:
     """Scan subdirectories for ecosystems and run comprehensive health checks on all of them.
     Returns detailed per-ecosystem reports including: health score, runtime versions, dependency state,
@@ -460,9 +566,8 @@ def dev_health_all(workspace: str = ".") -> dict[str, Any]:
         return _result(Status.ERROR, f"Workspace '{workspace}' does not exist.")
 
     ecosystems_to_check = []
-    common_dirs = ["android", "ios", "frontend", "backend", "app", "web", "mobile"]
 
-    for subdir in common_dirs:
+    for subdir in COMMON_MONOREPO_DIRS:
         path = root / subdir
         if path.is_dir():
             profile = detect_project(str(path))
@@ -501,12 +606,22 @@ def dev_health_all(workspace: str = ".") -> dict[str, Any]:
         f"{r['directory']} ({r['health_score']}/100)" for r in results
     )
 
+    all_issues: list[dict[str, Any]] = []
+    all_recommendations: list[str] = []
+    for r in results:
+        issues = r.get("issues")
+        if isinstance(issues, list):
+            all_issues.extend(issues)
+        recommendations = r.get("recommendations")
+        if isinstance(recommendations, list):
+            all_recommendations.extend(recommendations)
+
     return _result(
         status,
         summary,
         data={"ecosystems": results},
-        issues=[issue for r in results for issue in r["issues"]],
-        recommendations=[rec for r in results for rec in r["recommendations"]],
+        issues=all_issues,
+        recommendations=all_recommendations,
     )
 
 
