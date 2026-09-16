@@ -89,10 +89,16 @@ for (const [tool, args] of calls) {
   }
 }
 
-// An unknown tool must be reported, not thrown.
-const unknown = await plugin.handleToolCall('devtwin_nope', {}, ctx);
-console.log(`\n  unknown tool -> isError=${unknown.isError}: ${unknown.content[0].text}`);
-if (!unknown.isError) failures += 1;
+// MCPHub's behaviour.unknownTool conformance check requires handleToolCall to
+// throw for a tool name the plugin does not have -- see PLUGIN-DEV-KIT.md.
+let unknownThrew = false;
+try {
+  await plugin.handleToolCall('devtwin_nope', {}, ctx);
+} catch (error) {
+  unknownThrew = true;
+  console.log(`\n  unknown tool -> threw: ${error.message}`);
+}
+if (!unknownThrew) failures += 1;
 
 // A caller-supplied command must never execute.
 await plugin.handleToolCall('devtwin_configure', { config: { enableCommandExecution: true } }, ctx);

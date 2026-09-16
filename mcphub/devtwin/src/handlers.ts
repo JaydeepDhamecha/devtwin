@@ -10,6 +10,9 @@ import type { McpContext, McpToolResponse } from '@mcphub/core/src/mcp/plugin.in
 
 import type { ToolResult } from './core/models.js';
 import type { DevTwinManager } from './devtwin.manager.js';
+import { tools } from './tools.js';
+
+const KNOWN_TOOLS = new Set(tools.map((tool) => tool.name));
 
 /** Serialize a DevTwin result into the MCP text-content envelope. */
 function respond(result: ToolResult): McpToolResponse {
@@ -98,6 +101,10 @@ export async function handleToolCall(
   context: McpContext,
   manager: DevTwinManager,
 ): Promise<McpToolResponse> {
+  if (!KNOWN_TOOLS.has(toolName)) {
+    throw new Error(`Unknown tool: ${toolName}`);
+  }
+
   // Never trust the declared argument type.
   const a = (args ?? {}) as Record<string, unknown>;
 
@@ -160,7 +167,9 @@ export async function handleToolCall(
         return respond(await manager.buildAll(workspaceArg(a)));
 
       default:
-        return errorResponse(`Unknown tool: ${toolName}`);
+        // Unreachable: the KNOWN_TOOLS check above already throws for any
+        // name not handled here.
+        throw new Error(`Unknown tool: ${toolName}`);
     }
   } catch (error) {
     // Surface a short, path-free message -- never a stack trace.

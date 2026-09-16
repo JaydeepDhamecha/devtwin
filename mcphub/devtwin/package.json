@@ -8,6 +8,12 @@
   "dependencies": {
     "zod": "^3.22.0"
   },
+  "peerDependencies": {
+    "@mcphub/core": "*"
+  },
+  "peerDependenciesMeta": {
+    "@mcphub/core": { "optional": true }
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0"

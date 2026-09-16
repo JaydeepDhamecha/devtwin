@@ -100,6 +100,10 @@ export default class DevTwinPlugin extends BasePlugin {
     return tools;
   }
 
+  getConfigSchema() {
+    return configSchema;
+  }
+
   async handleToolCall(
     toolName: string,
     args: unknown,

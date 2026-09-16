@@ -393,6 +393,14 @@ const NOISY_BUILD = `node -e "${NOISY_SCRIPT}"`;
 // when the caller never successfully asked for anything.
 const sentinel = join(scratch, 'sentinel-ran');
 const SENTINEL_BUILD = `node -e "require('fs').writeFileSync('${sentinel}', 'ran')"`;
+const sentinelA = join(scratch, 'sentinel-dual-a');
+const sentinelB = join(scratch, 'sentinel-dual-b');
+const DUAL_BUILD_A = `node -e "require('fs').writeFileSync('${sentinelA}', 'ran')"`;
+const DUAL_BUILD_B = `node -e "require('fs').writeFileSync('${sentinelB}', 'ran')"`;
+const checkSentinelA = join(scratch, 'sentinel-dual-check-a');
+const checkSentinelB = join(scratch, 'sentinel-dual-check-b');
+const DUAL_CHECK_A = `node -e "require('fs').writeFileSync('${checkSentinelA}', 'ran')"`;
+const DUAL_CHECK_B = `node -e "require('fs').writeFileSync('${checkSentinelB}', 'ran')"`;
 
 const { ADAPTERS, EcosystemAdapter } = await import(
   pathToFileURL(join(buildDir, 'adapters/index.js')).href
@@ -422,6 +430,8 @@ ADAPTERS.push(
   new MarkerAdapter('slow-build', { build: [SLOW_BUILD] }),
   new MarkerAdapter('noisy-build', { build: [NOISY_BUILD] }),
   new MarkerAdapter('sentinel-build', { build: [SENTINEL_BUILD], test: [SENTINEL_BUILD] }),
+  new MarkerAdapter('dual-build', { build: [DUAL_BUILD_A, DUAL_BUILD_B] }),
+  new MarkerAdapter('dual-check', { test: [DUAL_CHECK_A, DUAL_CHECK_B] }),
 );
 
 /** A node-detected project (so the monorepo scans see an ecosystem) named `name`. */
@@ -790,6 +800,62 @@ await test('handlers: a malformed `run` does not silently run everything', async
   assert(ok.data.passed_count === 1, `control build did not run: ${JSON.stringify(ok.data.results)}`);
   assert(existsSync(sentinel), 'control build ran but wrote no sentinel -- the test proves nothing');
   return '4 malformed selections rejected, nothing executed';
+});
+
+// 22 — an explicit `run` must still respect the per-call cap, and a name
+// repeated in `run` must not spend the budget more than once.
+await test('build: an explicit `run` is deduped and still capped', async () => {
+  const dir = markerProject('dual-build');
+  const p = new Plugin();
+  await call(p, 'devtwin_configure', { config: { maxAutoBuildCommands: 1 } });
+
+  const r = await call(p, 'devtwin_build', {
+    workspace: dir,
+    run: [DUAL_BUILD_A, DUAL_BUILD_B, DUAL_BUILD_A],
+  });
+
+  assert(r.data.results.length === 1, `regression: cap bypassed — ${JSON.stringify(r.data.results)}`);
+  assert(
+    r.data.skipped_commands.includes(DUAL_BUILD_B),
+    `regression: B was not reported as skipped — ${JSON.stringify(r.data.skipped_commands)}`,
+  );
+  assert(existsSync(sentinelA), 'A should have run once');
+  assert(!existsSync(sentinelB), 'regression: B ran despite the 1-command cap');
+  return `run=[A,B,A] against cap=1 -> executed=${r.data.results.length}, skipped=${r.data.skipped_commands.length}`;
+});
+
+// 23 — devtwin_check must honour the same cap/dedup rules as devtwin_build.
+await test('check: an explicit `run` is deduped and still capped', async () => {
+  const dir = markerProject('dual-check');
+  const p = new Plugin();
+  await call(p, 'devtwin_configure', { config: { maxAutoCheckCommands: 1 } });
+
+  const r = await call(p, 'devtwin_check', {
+    workspace: dir,
+    run: [DUAL_CHECK_A, DUAL_CHECK_B, DUAL_CHECK_A],
+  });
+
+  assert(r.data.results.length === 1, `regression: cap bypassed — ${JSON.stringify(r.data.results)}`);
+  assert(
+    r.data.skipped_commands.includes(DUAL_CHECK_B),
+    `regression: B was not reported as skipped — ${JSON.stringify(r.data.skipped_commands)}`,
+  );
+  assert(existsSync(checkSentinelA), 'A should have run once');
+  assert(!existsSync(checkSentinelB), 'regression: B ran despite the 1-command cap');
+  return `run=[A,B,A] against cap=1 -> executed=${r.data.results.length}, skipped=${r.data.skipped_commands.length}`;
+});
+
+// 24 — a refused command occupying a slot in scan order must not push a real
+// command past the shared budget (devtwin_build_all's per-target selection).
+await test('selectCommands: a refused command does not eat the budget', async () => {
+  const manager = new Plugin().getStandaloneService();
+  const { toRun, skipped } = manager.selectCommands([REFUSED_BUILD, SENTINEL_BUILD], null, 1);
+  assert(
+    toRun.includes(SENTINEL_BUILD),
+    `regression: real command dropped by a refusal occupying the budget slot — toRun=${JSON.stringify(toRun)}`,
+  );
+  assert(skipped.length === 0, `regression: nothing should be skipped here — ${JSON.stringify(skipped)}`);
+  return `refused command is free; real command still fits under cap=1`;
 });
 
 const { withEnvSource, checkEnvVar, availableEnvNames, declaredEnvNames } = await import(

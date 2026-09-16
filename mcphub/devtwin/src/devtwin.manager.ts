@@ -557,16 +557,17 @@ export class DevTwinManager extends EventEmitter {
     const recognized: string[] = [];
     for (const a of adapters) recognized.push(...a.test_commands);
 
-    // Without an explicit selection only the first N run; with one, the full
-    // recognized list is the allowlist the selection is checked against.
-    const candidates =
-      run && run.length > 0 ? recognized : recognized.slice(0, this.config.maxAutoCheckCommands);
-    // Commands dropped by the cap were recognized but never attempted; saying so
-    // is the difference between "your checks pass" and "5 of your 8 checks pass".
-    const skipped = recognized.filter((c) => !candidates.includes(c));
+    const { toRun, skipped, rejected } = this.selectCommands(
+      recognized,
+      run,
+      this.config.maxAutoCheckCommands,
+    );
 
-    const { results, rejected, timeoutClamped, effectiveTimeoutSeconds } =
-      await this.runRecognizedCommands(path, candidates, this.config.checkTimeoutSeconds, run);
+    const { results, timeoutClamped, effectiveTimeoutSeconds } = await this.runRecognizedCommands(
+      path,
+      toRun,
+      this.config.checkTimeoutSeconds,
+    );
 
     const partition = partitionResults(results);
     const status = executionStatus(results, rejected, skipped);
@@ -610,15 +611,17 @@ export class DevTwinManager extends EventEmitter {
     const recognized: string[] = [];
     for (const a of adapters) recognized.push(...a.build_commands);
 
-    // The same per-call ceiling devtwin_check and devtwin_build_all enforce: at
-    // buildTimeoutSeconds each, an uncapped list can hold a single tool call
-    // open far longer than any client will wait.
-    const candidates =
-      run && run.length > 0 ? recognized : recognized.slice(0, this.config.maxAutoBuildCommands);
-    const skipped = recognized.filter((c) => !candidates.includes(c));
+    const { toRun, skipped, rejected } = this.selectCommands(
+      recognized,
+      run,
+      this.config.maxAutoBuildCommands,
+    );
 
-    const { results, rejected, timeoutClamped, effectiveTimeoutSeconds } =
-      await this.runRecognizedCommands(path, candidates, this.config.buildTimeoutSeconds, run);
+    const { results, timeoutClamped, effectiveTimeoutSeconds } = await this.runRecognizedCommands(
+      path,
+      toRun,
+      this.config.buildTimeoutSeconds,
+    );
 
     const partition = partitionResults(results);
     const status = executionStatus(results, rejected, skipped);
@@ -685,9 +688,10 @@ export class DevTwinManager extends EventEmitter {
       for (const a of adapters) buildCommands.push(...a.build_commands);
 
       // Spend the shared command budget in scan order; anything past it is
-      // reported as skipped rather than silently dropped.
-      const toRun = buildCommands.slice(0, Math.max(budget, 0));
-      const skipped = buildCommands.slice(toRun.length);
+      // reported as skipped rather than silently dropped. selectCommands (not
+      // a raw slice) so a refused/dangerous command earlier in scan order
+      // doesn't occupy a budget slot it never actually spends.
+      const { toRun, skipped } = this.selectCommands(buildCommands, null, Math.max(budget, 0));
       skippedCommands.push(...skipped);
 
       const { results: buildResults, timeoutClamped, effectiveTimeoutSeconds } =
@@ -1119,43 +1123,92 @@ export class DevTwinManager extends EventEmitter {
     return issues;
   }
 
+  /** Whether `command` would pass the allowlist -- checked without running it. */
+  private isRunnable(command: string): boolean {
+    return this.allowedArgs(command) !== null;
+  }
+
+  /** Split and allowlist-check a command in one place, reused by selection and execution. */
+  private allowedArgs(command: string): string[] | null {
+    const args = splitCommand(command);
+    if (args.length === 0 || !isAllowedExecutable(args[0]!) || isDangerous(args)) return null;
+    return args;
+  }
+
   /**
-   * Run recognized commands, respecting the allowlist.
+   * Decide what to execute from `recognized`, honouring an explicit `run`.
    *
-   * `candidates` is the set DevTwin itself discovered; `run` is the caller's
-   * optional subset of it. A command the caller names that is not in
-   * `candidates` is rejected, never executed -- there is no path from
-   * caller-supplied text to a spawned process.
+   * Three rules a naive membership filter gets wrong:
+   *
+   * - `rejected` is computed against the FULL recognized list, before any cap,
+   *   so a command the cap drops is never reported as "unrecognized" -- that
+   *   tells the caller it does not exist and they stop asking for it.
+   * - A repeated name in `run` is collapsed. Membership-filtering `run`
+   *   against the recognized list matches every repeat, so
+   *   `run: [cmd, cmd, cmd]` would otherwise run `cmd` three times against a
+   *   cap of one.
+   * - Only commands that would really spawn a process spend the budget. A
+   *   refusal costs nothing, so letting one consume the window pushes a real
+   *   command into "skipped" while the budget sits unused.
    */
+  private selectCommands(
+    recognized: string[],
+    run: string[] | null | undefined,
+    budget: number,
+  ): { toRun: string[]; skipped: string[]; rejected: string[] } {
+    let selected: string[];
+    let rejected: string[];
+
+    if (run && run.length > 0) {
+      rejected = run.filter((c) => !recognized.includes(c));
+      const seen = new Set<string>();
+      selected = [];
+      for (const candidate of run) {
+        if (recognized.includes(candidate) && !seen.has(candidate)) {
+          seen.add(candidate);
+          selected.push(candidate);
+        }
+      }
+    } else {
+      rejected = [];
+      selected = [...recognized];
+    }
+
+    const toRun: string[] = [];
+    const skipped: string[] = [];
+    let used = 0;
+    for (const command of selected) {
+      if (!this.isRunnable(command)) {
+        toRun.push(command); // free: yields a refusal entry, spawns nothing
+      } else if (used < budget) {
+        toRun.push(command);
+        used += 1;
+      } else {
+        skipped.push(command);
+      }
+    }
+
+    return { toRun, skipped, rejected };
+  }
+
+  /** Execute an already-selected command list. Selection happens in `selectCommands`. */
   private async runRecognizedCommands(
     path: string,
-    candidates: string[],
+    commands: string[],
     timeoutSeconds: number,
-    run?: string[] | null,
   ): Promise<{
     results: CommandOutcome[];
-    rejected: string[];
     timeoutClamped: boolean;
     effectiveTimeoutSeconds: number;
   }> {
-    let toRun: string[];
-    let rejected: string[] = [];
-
-    if (run && run.length > 0) {
-      toRun = run.filter((c) => candidates.includes(c));
-      rejected = run.filter((c) => !candidates.includes(c));
-    } else {
-      toRun = candidates;
-    }
-
     const budget = this.config.platformTimeoutBudgetSeconds;
     const effectiveTimeout = Math.min(timeoutSeconds, budget);
     const clamped = effectiveTimeout < timeoutSeconds;
 
     const results: CommandOutcome[] = [];
-    for (const commandStr of toRun) {
-      const args = splitCommand(commandStr);
-      if (args.length === 0 || !isAllowedExecutable(args[0]!) || isDangerous(args)) {
+    for (const commandStr of commands) {
+      const args = this.allowedArgs(commandStr);
+      if (args === null) {
         results.push({
           command: commandStr,
           executed: false,
@@ -1174,7 +1227,7 @@ export class DevTwinManager extends EventEmitter {
       });
     }
 
-    return { results, rejected, timeoutClamped: clamped, effectiveTimeoutSeconds: effectiveTimeout };
+    return { results, timeoutClamped: clamped, effectiveTimeoutSeconds: effectiveTimeout };
   }
 
   /** Keep a single command's captured output inside the configured ceiling. */
