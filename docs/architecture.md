@@ -25,8 +25,10 @@ health / drift / diagnostics engines (src/devtwin/core/)
 
 ## Layers
 
-**`server.py`** exposes ten MCP tools via the official Python SDK's
-`FastMCP`. Every tool returns a uniform, JSON-serializable envelope:
+**`server.py`** exposes multiple MCP tools via the official Python SDK's
+`FastMCP`: dev_detect, dev_health, dev_health_all, dev_drift, dev_explain_failure,
+dev_project_info, dev_dependencies, dev_services, dev_check, dev_build, dev_build_all,
+dev_prepare, dev_precommit. Every tool returns a uniform, JSON-serializable envelope:
 `{status, summary, data, issues, recommendations}`. No tool executes an
 arbitrary, model-supplied command -- see `security.md`.
 

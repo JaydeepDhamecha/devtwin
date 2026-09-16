@@ -1,0 +1,524 @@
+<title>DevTwin Plugin Submission</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bitter:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root {
+    --ground: #F6F9F9;
+    --surface: #FFFFFF;
+    --surface-sunk: #EDF3F3;
+    --ink: #101A1C;
+    --ink-soft: #40565A;
+    --ink-faint: #6C8186;
+    --rule: #D3E0E0;
+    --rule-strong: #A9C2C2;
+    --accent: #0F6B66;
+    --accent-soft: #E0F2F0;
+    --blocking: #9A4A11;
+    --blocking-soft: #FBEDE1;
+    --settled: #1F6B4A;
+    --settled-soft: #E2F1E9;
+
+    --display: 'Bitter', 'Iowan Old Style', Georgia, serif;
+    --body: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0C1214;
+      --surface: #141D1F;
+      --surface-sunk: #1B2629;
+      --ink: #E4EDEE;
+      --ink-soft: #A8BCBE;
+      --ink-faint: #7C9294;
+      --rule: #263436;
+      --rule-strong: #3A4C4F;
+      --accent: #4FD1C5;
+      --accent-soft: #14312F;
+      --blocking: #E8A268;
+      --blocking-soft: #33210F;
+      --settled: #6BCF9E;
+      --settled-soft: #12291F;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0C1214;
+    --surface: #141D1F;
+    --surface-sunk: #1B2629;
+    --ink: #E4EDEE;
+    --ink-soft: #A8BCBE;
+    --ink-faint: #7C9294;
+    --rule: #263436;
+    --rule-strong: #3A4C4F;
+    --accent: #4FD1C5;
+    --accent-soft: #14312F;
+    --blocking: #E8A268;
+    --blocking-soft: #33210F;
+    --settled: #6BCF9E;
+    --settled-soft: #12291F;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  .wrap {
+    max-width: 780px;
+    margin: 0 auto;
+    padding-inline: 24px;
+    padding-block: 56px 80px;
+  }
+
+  /* ---- masthead ---- */
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 18px;
+  }
+
+  h1 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(32px, 6vw, 46px);
+    line-height: 1.12;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+    margin: 0 0 14px;
+  }
+
+  .standfirst {
+    font-size: 19px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0;
+  }
+
+  .facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 28px;
+    margin-top: 28px;
+    padding-top: 20px;
+    border-top: 1px solid var(--rule);
+  }
+  .fact { padding-block: 6px; }
+  .fact dt {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 2px;
+  }
+  .fact dd {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- scan layer ---- */
+  .summary {
+    margin-top: 44px;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+  .summary h2 {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0;
+    padding: 14px 20px;
+    background: var(--surface-sunk);
+    border-bottom: 1px solid var(--rule);
+  }
+  .ask {
+    display: grid;
+    grid-template-columns: 2.2rem 1fr auto;
+    gap: 4px 14px;
+    align-items: baseline;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .ask:last-child { border-bottom: 0; }
+  .ask-num {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .ask-q { font-weight: 600; }
+  .ask-note {
+    grid-column: 2;
+    font-size: 15px;
+    color: var(--ink-soft);
+  }
+
+  .chip {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    padding: 4px 9px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .chip-block { background: var(--blocking-soft); color: var(--blocking); }
+  .chip-check { background: var(--accent-soft); color: var(--accent); }
+
+  /* ---- questions ---- */
+  section { margin-top: 56px; }
+
+  .q-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+  }
+  .q-num {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  h2.q {
+    font-family: var(--display);
+    font-size: 25px;
+    font-weight: 600;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  p { max-width: 65ch; margin: 0 0 16px; }
+  section p:first-of-type { margin-top: 14px; }
+
+  .ask-line {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 14px 18px;
+    margin: 22px 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .ask-line p { margin: 0; font-weight: 600; }
+
+  .branch {
+    display: grid;
+    gap: 12px;
+    margin: 22px 0;
+  }
+  @media (min-width: 640px) { .branch { grid-template-columns: 1fr 1fr; } }
+  .branch > div {
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 16px 18px;
+    background: var(--surface);
+  }
+  .branch h3 {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin: 0 0 8px;
+    color: var(--ink-faint);
+  }
+  .branch p { font-size: 15.5px; margin: 0; }
+
+  ul { padding-left: 0; margin: 0 0 16px; list-style: none; max-width: 65ch; }
+  ul li {
+    position: relative;
+    padding-left: 22px;
+    margin-bottom: 9px;
+  }
+  ul li::before {
+    content: "";
+    position: absolute;
+    left: 4px;
+    top: 0.62em;
+    width: 6px;
+    height: 1px;
+    background: var(--rule-strong);
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.87em;
+    background: var(--surface-sunk);
+    padding: 1.5px 5px;
+    border-radius: 3px;
+    color: var(--ink);
+  }
+
+  .pair {
+    border-top: 1px solid var(--rule);
+    padding-top: 16px;
+    margin-top: 20px;
+  }
+  .pair h3 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    font-family: var(--body);
+  }
+  .pair p { margin: 0; color: var(--ink-soft); }
+
+  .ready {
+    margin-top: 56px;
+    padding: 24px;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--surface);
+  }
+  .ready h2 {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 16px;
+  }
+  .ready ul { margin: 0; }
+  .ready li { padding-left: 24px; }
+  .ready li::before {
+    content: "✓";
+    background: none;
+    width: auto;
+    height: auto;
+    left: 0;
+    top: 0;
+    color: var(--settled);
+    font-weight: 700;
+    font-size: 13px;
+  }
+
+  .closer {
+    margin-top: 40px;
+    padding-top: 22px;
+    border-top: 2px solid var(--ink);
+    font-size: 17px;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    a { transition: color .15s ease; }
+  }
+  a { color: var(--accent); }
+  a:focus-visible, :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+</style>
+
+<div class="wrap">
+
+  <p class="eyebrow">Plugin submission · pre-review</p>
+  <h1>Four questions before we submit DevTwin</h1>
+  <p class="standfirst">
+    DevTwin is built, compliant, and verified against MCPHub's Basic 18. Before we
+    put it through review, four things in the dev kit don't resolve cleanly for a
+    plugin of this kind — and the first one changes what we submit.
+  </p>
+
+  <dl class="facts">
+    <div class="fact"><dt>Package</dt><dd>@mcphub/plugin-devtwin</dd></div>
+    <div class="fact"><dt>Version</dt><dd>1.0.0</dd></div>
+    <div class="fact"><dt>Tools</dt><dd>18</dd></div>
+    <div class="fact"><dt>Ecosystems</dt><dd>10</dd></div>
+    <div class="fact"><dt>Basic 18</dt><dd>All passing</dd></div>
+  </dl>
+
+  <div class="summary">
+    <h2>What we need from you</h2>
+
+    <div class="ask">
+      <span class="ask-num">01</span>
+      <span class="ask-q">Is there a local-execution plugin type?</span>
+      <span class="chip chip-block">Blocking</span>
+      <span class="ask-note">Decides whether we submit 18 tools or 9.</span>
+    </div>
+
+    <div class="ask">
+      <span class="ask-num">02</span>
+      <span class="ask-q">Will subprocess spawning pass review?</span>
+      <span class="chip chip-block">Blocking</span>
+      <span class="ask-note">It's a HIGH finding we can't design away — it is the product.</span>
+    </div>
+
+    <div class="ask">
+      <span class="ask-num">03</span>
+      <span class="ask-q">Are the timeout and response limits as we've read them?</span>
+      <span class="chip chip-check">Confirm</span>
+      <span class="ask-note">We've already engineered around both.</span>
+    </div>
+
+    <div class="ask">
+      <span class="ask-num">04</span>
+      <span class="ask-q">Do two empty-by-design fields pass verify?</span>
+      <span class="chip chip-check">Confirm</span>
+      <span class="ask-note">We'd rather not invent fields that don't exist.</span>
+    </div>
+  </div>
+
+  <section>
+    <div class="q-head">
+      <span class="q-num">01</span>
+      <h2 class="q">Is there a local-execution plugin type?</h2>
+    </div>
+
+    <p>
+      DevTwin reports on a <strong>developer's own machine</strong>: which runtimes are
+      installed, which ports are listening, whether Postgres or Redis is actually
+      running, Docker state, Git state. That is its entire value.
+    </p>
+    <p>
+      The dev kit describes plugins as executing server-side over Streamable HTTP. If
+      DevTwin's tools run on MCPHub's server, they will return confident,
+      correct-looking answers <em>about MCPHub's server</em> rather than about the
+      developer's machine. Six of our eighteen tools are affected:
+      <code>devtwin_services</code>, <code>devtwin_drift</code>,
+      <code>devtwin_health</code>, <code>devtwin_check</code>,
+      <code>devtwin_build</code>, <code>devtwin_build_all</code>.
+    </p>
+
+    <div class="ask-line">
+      <p>Does MCPHub support a plugin that executes in the caller's local environment — a local runtime, a bridge or agent, or any comparable mechanism?</p>
+    </div>
+
+    <div class="branch">
+      <div>
+        <h3>If yes</h3>
+        <p>We submit all 18 tools. The port is complete and verified against our existing Python server.</p>
+      </div>
+      <div>
+        <h3>If no</h3>
+        <p>We submit only the tools that read repository <em>content</em> and are correct wherever they run — <code>devtwin_detect</code>, <code>devtwin_project_info</code>, <code>devtwin_dependencies</code>, <code>devtwin_precommit</code> — plus the 5 settings tools, and keep the full server on PyPI.</p>
+      </div>
+    </div>
+
+    <p>We'd rather ship the smaller honest version than the larger misleading one.</p>
+  </section>
+
+  <section>
+    <div class="q-head">
+      <span class="q-num">02</span>
+      <h2 class="q">Subprocess spawning — will this pass review?</h2>
+    </div>
+
+    <p>
+      The dev kit lists subprocess spawning as HIGH severity — flagged for review,
+      −15 on the security score. <code>devtwin_check</code> and
+      <code>devtwin_build</code> exist specifically to run a project's own test and
+      build commands, so we can't remove this and still have a product.
+    </p>
+
+    <p>What we do to bound it:</p>
+    <ul>
+      <li>No tool accepts an arbitrary command. The <code>run</code> parameter selects from commands DevTwin's own adapters discovered in the project; anything else is returned in a <code>rejected</code> list and never executed.</li>
+      <li>Executables are allowlisted — roughly 45 known toolchain binaries. Destructive subcommands (<code>reset</code>, <code>clean</code>, <code>push</code>, <code>rm</code>, <code>prune</code>, <code>--force</code>) are denied even for allowlisted executables.</li>
+      <li>Every command runs through <code>execFile</code> with <code>shell: false</code> and an explicit timeout. There is no path from model-supplied text to a shell string.</li>
+      <li><code>enableCommandExecution: false</code> disables all three executing tools while the read-only analysis tools keep working.</li>
+    </ul>
+
+    <div class="ask-line">
+      <p>Is that sufficient to pass review, or is there a sanctioned pattern for plugins that legitimately need to run project commands?</p>
+    </div>
+
+    <p>
+      If a reviewer would reject this regardless, we'd rather know now and submit the
+      read-only subset instead of cycling through <code>needs_fixes</code>.
+    </p>
+  </section>
+
+  <section>
+    <div class="q-head">
+      <span class="q-num">03</span>
+      <h2 class="q">Two limits we've engineered around</h2>
+    </div>
+
+    <div class="pair">
+      <h3>The 30-second tool execution timeout</h3>
+      <p>
+        Real Gradle and Xcode builds take minutes. We cap every command at
+        <code>platformTimeoutBudgetSeconds</code> (default 25) and report over-budget
+        builds as timed out with <code>timeout_clamped: true</code>, rather than letting
+        them run past the platform limit. Is 25s the right ceiling, and is the budget
+        configurable per plugin or per plan?
+      </p>
+    </div>
+
+    <div class="pair">
+      <h3>The 1MB response limit</h3>
+      <p>
+        Build logs exceed this easily. We truncate per-command output and enforce a
+        serialized ceiling before returning. Confirming the limit is per tool result,
+        not per session.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="q-head">
+      <span class="q-num">04</span>
+      <h2 class="q">Two fields that are empty by design</h2>
+    </div>
+
+    <div class="pair">
+      <h3><code>getSensitiveConfigFields()</code> returns an empty array</h3>
+      <p>
+        DevTwin authenticates to nothing and stores no credentials — there is
+        deliberately no API key, token, or password in its config schema. Check #4 is
+        vacuously satisfied. Will an empty array pass <code>/mcphub-dev verify</code>,
+        or does the checker expect a non-empty list? We'd rather not add a field that
+        doesn't exist.
+      </p>
+    </div>
+
+    <div class="pair">
+      <h3><code>dbSchema</code> is unset</h3>
+      <p>
+        DevTwin creates no tables; <code>devtwin_remove</code> has nothing to delete.
+        We read check #16 as non-critical and not applicable here. Please confirm.
+      </p>
+    </div>
+  </section>
+
+  <div class="ready">
+    <h2>What's already built</h2>
+    <ul>
+      <li>18 tools, all prefixed <code>devtwin_</code>, each categorised — 5 settings, 8 core, 5 service</li>
+      <li>Pricing tiers with full coverage, zod config schema with every field defaulted, config meta, 2 action plans, health check, SKILL.md, brand icon</li>
+      <li>A local verifier for the Basic 18 and a smoke test that exercises every tool against a real repository</li>
+      <li>Output verified identical to our existing Python MCP server on the same repository — health score, issue codes, ecosystem confidences, failure-diagnosis ranking</li>
+    </ul>
+  </div>
+
+  <p class="closer">
+    Happy to walk anyone through the code or hand over the repository.
+  </p>
+
+</div>

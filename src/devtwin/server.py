@@ -7,15 +7,16 @@ JSON-serializable dict shaped like::
      "data": {...}, "issues": [...], "recommendations": [...]}
 
 No tool here executes an arbitrary, model-supplied shell string. Commands
-that run at all (``dev_check``) are drawn from a recognized, allowlisted set
-discovered by ecosystem adapters, run with ``shell=False`` and a timeout.
+that run at all (``dev_check``, ``dev_build``, ``dev_build_all``) are drawn
+from a recognized, allowlisted set discovered by ecosystem adapters, run with
+``shell=False`` and a timeout.
 """
 
 from __future__ import annotations
 
 import shlex
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from mcp.server.mcpserver import MCPServer
 
@@ -55,8 +56,19 @@ SECRET_FILE_PATTERNS = (
     ".pfx",
 )
 
+# Both caps are stated literally in the dev_check/dev_build docstrings, which
+# become the MCP tool descriptions -- update those too if these change.
 MAX_AUTO_CHECK_COMMANDS = 5
+# Total builds a single dev_build_all call may run. Each build gets
+# BUILD_TIMEOUT_SECONDS, so an uncapped monorepo scan can outlive any MCP
+# client timeout; commands past the cap are reported as skipped, never dropped.
+MAX_AUTO_BUILD_COMMANDS = 5
 CHECK_TIMEOUT_SECONDS = 120
+BUILD_TIMEOUT_SECONDS = 300
+
+COMMON_MONOREPO_DIRS = ["android", "ios", "frontend", "backend", "app", "web", "mobile"]
+# Label for the workspace root itself in dev_build_all's per-directory results.
+ROOT_DIR_LABEL = "."
 
 
 def _result(
@@ -77,6 +89,325 @@ def _result(
 
 def _resolve(workspace: str) -> Path:
     return Path(workspace).expanduser().resolve()
+
+
+def _is_runnable(command_str: str) -> bool:
+    """Whether this command would actually spawn a process.
+
+    Pure and cheap, so selection can tell "this will cost 300 seconds" from
+    "this produces a refusal entry for free" before anything runs.
+    """
+    try:
+        args = shlex.split(command_str)
+    except ValueError:
+        return False
+    return bool(args) and is_allowed_executable(args[0]) and not is_dangerous(args)
+
+
+class Selection(NamedTuple):
+    """What a call will actually attempt, decided before anything executes."""
+
+    to_run: list[str]
+    skipped: list[str]
+    rejected: list[str]
+    budget_used: int
+
+
+def _select_commands(recognized: list[str], run: list[str] | None, budget: int) -> Selection:
+    """Decide what to execute from `recognized`, honouring an explicit `run`.
+
+    Three rules the callers all need and used to each get slightly wrong:
+
+    - `rejected` is computed against the FULL recognized list, before any cap.
+      Reporting a command the cap dropped as "unrecognized" tells the caller it
+      does not exist and they stop asking for it.
+    - A repeated name in `run` is collapsed. Membership-filtering `run` against
+      the recognized list matched every repeat, so `run=[cmd] * 10` ran ten
+      builds against a cap of five.
+    - Only commands that would really spawn a process spend the budget. A
+      refusal costs nothing, so letting one consume the window pushed real
+      builds into "skipped" while the budget sat unused.
+    """
+    if run:
+        rejected = [c for c in run if c not in recognized]
+        seen: set[str] = set()
+        selected = []
+        for candidate in run:
+            if candidate in recognized and candidate not in seen:
+                seen.add(candidate)
+                selected.append(candidate)
+    else:
+        rejected = []
+        selected = list(recognized)
+
+    to_run: list[str] = []
+    skipped: list[str] = []
+    used = 0
+    for command in selected:
+        if not _is_runnable(command):
+            to_run.append(command)  # free: yields a refusal entry, spawns nothing
+        elif used < budget:
+            to_run.append(command)
+            used += 1
+        else:
+            skipped.append(command)
+
+    return Selection(to_run, skipped, rejected, used)
+
+
+def _run_recognized_commands(path: Path, commands: list[str], timeout: int) -> list[dict[str, Any]]:
+    """Execute an already-selected command list. Selection happens in
+    :func:`_select_commands`; this only runs what it is given."""
+    results: list[dict[str, Any]] = []
+    for command_str in commands:
+        try:
+            args = shlex.split(command_str)
+        except ValueError:
+            # An adapter emitted an unparseable command string (unbalanced
+            # quote). That is a refusal, not a crash out of the tool.
+            results.append(
+                {
+                    "command": command_str,
+                    "executed": False,
+                    "reason": UNPARSEABLE_REASON,
+                }
+            )
+            continue
+        if not args or not is_allowed_executable(args[0]) or is_dangerous(args):
+            results.append(
+                {
+                    "command": command_str,
+                    "executed": False,
+                    "reason": "not in DevTwin's allowlist of recognized commands",
+                }
+            )
+            continue
+        outcome: CommandResult = run_command(args, cwd=str(path), timeout=timeout)
+        results.append(
+            {
+                "command": command_str,
+                "executed": True,
+                "result": outcome.to_dict(),
+                "passed": outcome.available and outcome.returncode == 0,
+            }
+        )
+
+    return results
+
+
+class Outcomes(NamedTuple):
+    """Command results split by what actually happened to each command."""
+
+    passed: list[dict[str, Any]]
+    failed: list[dict[str, Any]]
+    refused: list[dict[str, Any]]
+    unavailable: list[dict[str, Any]]
+    timed_out: list[dict[str, Any]]
+
+    @property
+    def executed(self) -> int:
+        """Commands that actually ran, whatever the result."""
+        return len(self.passed) + len(self.failed) + len(self.timed_out)
+
+
+def _partition_results(results: list[dict[str, Any]]) -> Outcomes:
+    """Split command results by outcome.
+
+    Only a command that ran to completion and returned non-zero is a failure.
+    Three other things are not: a command refused by the allowlist never ran; a
+    command whose executable is not installed never ran either (reporting a
+    missing `npm` as a failed build invents a compilation error that does not
+    exist); and a command killed at the timeout did run but never reached a
+    verdict, so calling it a failure is indistinguishable from a real compile
+    error the user must go fix.
+    """
+    passed: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    refused: list[dict[str, Any]] = []
+    unavailable: list[dict[str, Any]] = []
+    timed_out: list[dict[str, Any]] = []
+
+    for r in results:
+        if not r.get("executed"):
+            refused.append(r)
+            continue
+        outcome = r.get("result") or {}
+        if not outcome.get("available", True):
+            unavailable.append(r)
+        elif outcome.get("timed_out"):
+            timed_out.append(r)
+        elif r.get("passed"):
+            passed.append(r)
+        else:
+            failed.append(r)
+
+    return Outcomes(passed, failed, refused, unavailable, timed_out)
+
+
+def _execution_status(
+    results: list[dict[str, Any]],
+    rejected: list[str] | None = None,
+    skipped: list[str] | None = None,
+) -> Status:
+    """Status for a set of command results, never reporting a run that did not
+    happen as OK.
+
+    `rejected` are names the caller asked for that DevTwin does not recognize,
+    and `skipped` are recognized commands dropped for the per-call cap. Both
+    mean "you asked for something that did not run", so neither can leave the
+    result looking clean.
+    """
+    o = _partition_results(results)
+    if o.failed:
+        return Status.ERROR
+    if o.refused or o.unavailable or o.timed_out or rejected or skipped:
+        # Nothing that ran failed, but something we were asked to run never did.
+        return Status.WARNING
+    return Status.OK if results else Status.UNKNOWN
+
+
+def _execution_summary(
+    kind: str,
+    results: list[dict[str, Any]],
+    recognized: list[str],
+    rejected: list[str],
+    skipped: list[str],
+) -> str:
+    """One sentence covering every outcome, including the ones that did not run.
+
+    Each clause is emitted only when it is non-zero, so a clean run reads
+    "Ran 2 build(s), 0 failed." and nothing more.
+    """
+    o = _partition_results(results)
+
+    if not results:
+        if rejected:
+            return (
+                f"None of the requested command(s) are recognized {kind} commands "
+                f"for this project; {len(recognized)} recognized command(s) available."
+            )
+        return f"No recognized {kind} commands were found for this project."
+
+    summary = f"Ran {o.executed} {kind}(s), {len(o.failed)} failed"
+    if o.timed_out:
+        summary += f", {len(o.timed_out)} timed out"
+    if o.refused:
+        summary += f", {len(o.refused)} refused (not in DevTwin's allowlist)"
+    if o.unavailable:
+        summary += f", {len(o.unavailable)} skipped (tool not installed)"
+    if skipped:
+        summary += f", {len(skipped)} not attempted (per-call cap)"
+    if rejected:
+        summary += f", {len(rejected)} unrecognized"
+    return summary + "."
+
+
+UNPARSEABLE_REASON = "command string could not be parsed into arguments"
+
+
+def _refusal_issues(
+    directory: str, refused: list[dict[str, Any]], kind: str = "build"
+) -> list[dict[str, Any]]:
+    """Split refusals by cause.
+
+    A command the allowlist rejected and a command DevTwin could not parse need
+    different fixes -- telling someone to get an unbalanced quote allowlisted
+    sends them after the wrong thing.
+    """
+    unparseable = [r for r in refused if r.get("reason") == UNPARSEABLE_REASON]
+    not_allowed = [r for r in refused if r.get("reason") != UNPARSEABLE_REASON]
+
+    issues: list[dict[str, Any]] = []
+    if not_allowed:
+        issues.append(_refused_issue(directory, not_allowed, kind=kind))
+    if unparseable:
+        issues.append(
+            {
+                "severity": "medium",
+                "code": f"{kind}.commands_unparseable",
+                "title": f"{kind.capitalize()} command(s) in '{directory}' could not be parsed",
+                "message": (
+                    "DevTwin could not split these into arguments, usually an "
+                    "unbalanced quote in the command the adapter produced."
+                ),
+                "evidence": [str(r.get("command")) for r in unparseable],
+                "recommendation": "Report this; the command DevTwin derived is malformed.",
+            }
+        )
+    return issues
+
+
+def _refused_issue(
+    directory: str, refused: list[dict[str, Any]], kind: str = "build"
+) -> dict[str, Any]:
+    """`kind` is "build" or "check" -- dev_check reuses this for test commands."""
+    return {
+        "severity": "medium",
+        "code": f"{kind}.commands_refused",
+        "title": f"{kind.capitalize()} command(s) in '{directory}' were not executed",
+        "message": f"These commands are not in DevTwin's allowlist, so the {kind} did not run.",
+        "evidence": [str(r.get("command")) for r in refused],
+        "recommendation": "Run them yourself; DevTwin cannot report a pass or a failure for them.",
+    }
+
+
+def _timed_out_issue(
+    directory: str, timed_out: list[dict[str, Any]], timeout: int, kind: str = "build"
+) -> dict[str, Any]:
+    """A timed-out command reached no verdict. Say so, and say what to do next."""
+    return {
+        "severity": "medium",
+        "code": f"{kind}.commands_timed_out",
+        "title": f"{kind.capitalize()} command(s) in '{directory}' were stopped at the timeout",
+        "message": (
+            f"These commands were still running after {timeout}s and were stopped. "
+            "That is not a failure -- DevTwin has no result for them either way."
+        ),
+        "evidence": [str(r.get("command")) for r in timed_out],
+        "recommendation": (
+            "Run them yourself, or raise the timeout if this project legitimately "
+            "builds for longer."
+        ),
+    }
+
+
+def _unavailable_issue(directory: str, unavailable: list[dict[str, Any]]) -> dict[str, Any]:
+    """The build tool is not installed. That is not a build failure, but it does
+    need saying -- otherwise the directory is a bare WARNING with nothing in it."""
+    return {
+        "severity": "medium",
+        "code": "build.tool_not_installed",
+        "title": f"Build tool(s) for '{directory}' could not be started",
+        "message": (
+            "These commands never started: the executable was not found on PATH, or "
+            "was found but could not be run (missing execute permission)."
+        ),
+        "evidence": [str(r.get("command")) for r in unavailable],
+        "recommendation": (
+            "Check the toolchain is installed and executable (a fresh clone often "
+            "loses +x on ./gradlew); dev_drift shows what this project expects."
+        ),
+    }
+
+
+def _scan_build_targets(root: Path) -> list[tuple[str, Path, list[str]]]:
+    """Directories dev_build_all should build: the workspace root itself (labelled
+    ROOT_DIR_LABEL) plus any recognized COMMON_MONOREPO_DIRS subdirectory. Resolved
+    paths are de-duplicated so a root-level ecosystem is never counted twice."""
+    candidates = [(ROOT_DIR_LABEL, root)] + [(name, root / name) for name in COMMON_MONOREPO_DIRS]
+    targets: list[tuple[str, Path, list[str]]] = []
+    seen: set[Path] = set()
+    for label, path in candidates:
+        if not path.is_dir():
+            continue
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        profile = detect_project(str(resolved))
+        if profile.ecosystems:
+            targets.append((label, resolved, profile.ecosystems))
+    return targets
 
 
 @mcp.tool()
@@ -234,7 +565,9 @@ def dev_check(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
     e.g. `pytest`, `./gradlew test`, `npm test`, `cargo test`. Only commands
     DevTwin itself recognized are ever executed (never an arbitrary string),
     each with a timeout. Pass `run` to restrict to a subset of the recognized
-    commands (call dev_project_info first to see what's available)."""
+    commands (call dev_project_info first to see what's available). At most
+    5 commands run per call, whether or not `run` is given; anything
+    beyond that is reported in `skipped_commands`, never silently dropped."""
     ws = inspect_workspace(workspace)
     if not ws.exists:
         return _result(Status.ERROR, f"Workspace '{workspace}' does not exist.")
@@ -245,43 +578,40 @@ def dev_check(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
     for a in adapters:
         recognized.extend(a.test_commands)
 
-    if run:
-        to_run = [c for c in run if c in recognized]
-        rejected = [c for c in run if c not in recognized]
-    else:
-        to_run = recognized[:MAX_AUTO_CHECK_COMMANDS]
-        rejected = []
+    # The cap is a wall-clock bound, so an explicit `run` is subject to it too:
+    # otherwise a caller that wants everything simply names everything.
+    selection = _select_commands(recognized, run, MAX_AUTO_CHECK_COMMANDS)
+    skipped, rejected = selection.skipped, selection.rejected
+    results = _run_recognized_commands(path, selection.to_run, CHECK_TIMEOUT_SECONDS)
 
-    results: list[dict[str, Any]] = []
-    for command_str in to_run:
-        args = shlex.split(command_str)
-        if not args or not is_allowed_executable(args[0]) or is_dangerous(args):
-            results.append(
-                {
-                    "command": command_str,
-                    "executed": False,
-                    "reason": "not in DevTwin's allowlist of recognized check commands",
-                }
-            )
-            continue
-        outcome: CommandResult = run_command(args, cwd=str(path), timeout=CHECK_TIMEOUT_SECONDS)
-        results.append(
-            {
-                "command": command_str,
-                "executed": True,
-                "result": outcome.to_dict(),
-                "passed": outcome.available and outcome.returncode == 0,
-            }
-        )
-
-    failed = [r for r in results if r.get("executed") and not r.get("passed")]
-    status = Status.ERROR if failed else (Status.OK if results else Status.UNKNOWN)
+    o = _partition_results(results)
+    status = _execution_status(results, rejected=rejected, skipped=skipped)
     return _result(
         status,
-        f"Ran {len(results)} check(s), {len(failed)} failed."
-        if results
-        else "No recognized check commands were found for this project.",
-        data={"recognized_commands": recognized, "results": results, "rejected": rejected},
+        _execution_summary("check", results, recognized, rejected, skipped),
+        data={
+            "recognized_commands": recognized,
+            "results": results,
+            "rejected": rejected,
+            "skipped_commands": skipped,
+            "max_check_commands": MAX_AUTO_CHECK_COMMANDS,
+            "executed_count": o.executed,
+            "passed_count": len(o.passed),
+            "failed_count": len(o.failed),
+            "refused_count": len(o.refused),
+            "refused_commands": [str(r.get("command")) for r in o.refused],
+            "unavailable_count": len(o.unavailable),
+            "timed_out_count": len(o.timed_out),
+        },
+        issues=(
+            _refusal_issues(str(path), o.refused, kind="check")
+            + (
+                [_timed_out_issue(str(path), o.timed_out, CHECK_TIMEOUT_SECONDS, kind="check")]
+                if o.timed_out
+                else []
+            )
+            + ([_unavailable_issue(str(path), o.unavailable)] if o.unavailable else [])
+        ),
     )
 
 
@@ -451,44 +781,221 @@ def dev_precommit(workspace: str = ".") -> dict[str, Any]:
 
 
 @mcp.tool()
-def dev_health_all(workspace: str = ".") -> dict[str, Any]:
-    """Scan subdirectories for ecosystems and run comprehensive health checks on all of them.
-    Returns detailed per-ecosystem reports including: health score, runtime versions, dependency state,
-    required services, issues, and recommendations. Perfect for monorepos with multiple tech stacks."""
+def dev_build(workspace: str = ".", run: list[str] | None = None) -> dict[str, Any]:
+    """Run recognized project build/compile commands detected from project files,
+    e.g. `npm run build`, `./gradlew build`, `xcodebuild build`, `dotnet build`.
+    Only commands DevTwin itself recognized are ever executed (never an arbitrary string),
+    each with a timeout. Pass `run` to restrict to a subset of the recognized
+    commands (call dev_project_info first to see what's available). At most
+    5 commands run per call, whether or not `run` is given; anything
+    beyond that is reported in `skipped_commands`, never silently dropped."""
+    ws = inspect_workspace(workspace)
+    if not ws.exists:
+        return _result(Status.ERROR, f"Workspace '{workspace}' does not exist.")
+    path = _resolve(workspace)
+    adapters = run_adapters(path)
+
+    recognized: list[str] = []
+    for a in adapters:
+        recognized.extend(a.build_commands)
+
+    # Same per-call ceiling dev_check and dev_build_all enforce: at 300s each,
+    # an uncapped list can hold a single tool call open for twenty minutes.
+    selection = _select_commands(recognized, run, MAX_AUTO_BUILD_COMMANDS)
+    skipped, rejected = selection.skipped, selection.rejected
+    results = _run_recognized_commands(path, selection.to_run, BUILD_TIMEOUT_SECONDS)
+
+    o = _partition_results(results)
+    status = _execution_status(results, rejected=rejected, skipped=skipped)
+    return _result(
+        status,
+        _execution_summary("build", results, recognized, rejected, skipped),
+        data={
+            "recognized_commands": recognized,
+            "results": results,
+            "rejected": rejected,
+            "skipped_commands": skipped,
+            "max_build_commands": MAX_AUTO_BUILD_COMMANDS,
+            "executed_count": o.executed,
+            "passed_count": len(o.passed),
+            "failed_count": len(o.failed),
+            "refused_count": len(o.refused),
+            "refused_commands": [str(r.get("command")) for r in o.refused],
+            "unavailable_count": len(o.unavailable),
+            "timed_out_count": len(o.timed_out),
+        },
+        issues=(
+            _refusal_issues(str(path), o.refused)
+            + (
+                [_timed_out_issue(str(path), o.timed_out, BUILD_TIMEOUT_SECONDS)]
+                if o.timed_out
+                else []
+            )
+            + ([_unavailable_issue(str(path), o.unavailable)] if o.unavailable else [])
+        ),
+    )
+
+
+@mcp.tool()
+def dev_build_all(workspace: str = ".") -> dict[str, Any]:
+    """Scan subdirectories for ecosystems and run comprehensive build checks on all of them.
+    Returns detailed per-ecosystem build results including: pass/fail status, build output,
+    and any compilation errors. Perfect for monorepos to verify backend changes don't break
+    Android, iOS, and frontend builds."""
     root = _resolve(workspace)
     if not root.exists():
         return _result(Status.ERROR, f"Workspace '{workspace}' does not exist.")
 
-    ecosystems_to_check = []
-    common_dirs = ["android", "ios", "frontend", "backend", "app", "web", "mobile"]
-
-    for subdir in common_dirs:
-        path = root / subdir
-        if path.is_dir():
-            profile = detect_project(str(path))
-            if profile.ecosystems:
-                ecosystems_to_check.append((subdir, path, profile.ecosystems))
+    ecosystems_to_check = _scan_build_targets(root)
 
     if not ecosystems_to_check:
-        return _result(Status.UNKNOWN, "No recognized ecosystems found in subdirectories.", data={"ecosystems": []})
+        return _result(
+            Status.UNKNOWN,
+            "No recognized ecosystems found in the workspace root or its subdirectories.",
+            data={"ecosystems": []},
+        )
+
+    results: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    summary_parts: list[str] = []
+    skipped_commands: list[str] = []
+    budget = MAX_AUTO_BUILD_COMMANDS
+
+    for dir_name, dir_path, ecosystems in ecosystems_to_check:
+        adapters = run_adapters(dir_path)
+        build_commands: list[str] = []
+        for a in adapters:
+            build_commands.extend(a.build_commands)
+        # Spend the shared command budget in scan order; anything past it is
+        # reported as skipped rather than silently dropped.
+        selection = _select_commands(build_commands, None, budget)
+        skipped = selection.skipped
+        skipped_commands.extend(skipped)
+
+        build_results = _run_recognized_commands(dir_path, selection.to_run, BUILD_TIMEOUT_SECONDS)
+        ob = _partition_results(build_results)
+        # The budget exists to bound wall-clock time, so only builds that
+        # actually ran spend it. Charging for a command the allowlist refused
+        # would exhaust the budget on zero work and report the real builds
+        # further down the scan as "skipped".
+        budget -= ob.executed
+
+        # `skipped` counts: a directory whose first build ran clean while later
+        # ones were dropped by the shared budget is not fully "ok".
+        build_status = _execution_status(build_results, skipped=skipped)
+        issues.extend(_refusal_issues(dir_name, ob.refused))
+        if ob.timed_out:
+            issues.append(_timed_out_issue(dir_name, ob.timed_out, BUILD_TIMEOUT_SECONDS))
+        if ob.unavailable:
+            issues.append(_unavailable_issue(dir_name, ob.unavailable))
+        results.append(
+            {
+                "directory": dir_name,
+                "ecosystems": ecosystems,
+                "status": build_status.value,
+                "build_commands": build_commands,
+                "build_results": build_results,
+                "executed_count": ob.executed,
+                "passed_count": len(ob.passed),
+                "failed_count": len(ob.failed),
+                "refused_count": len(ob.refused),
+                "timed_out_count": len(ob.timed_out),
+                "unavailable_count": len(ob.unavailable),
+                "skipped_commands": skipped,
+            }
+        )
+
+        part = f"{dir_name} ({len(ob.passed)}/{ob.executed} passed"
+        if ob.failed:
+            part += f", {len(ob.failed)} failed"
+        if ob.timed_out:
+            part += f", {len(ob.timed_out)} timed out"
+        if ob.unavailable:
+            part += f", {len(ob.unavailable)} tool missing"
+        if ob.refused:
+            part += f", {len(ob.refused)} refused"
+        if skipped:
+            part += f", {len(skipped)} skipped"
+        summary_parts.append(part + ")")
+
+    # Aggregate status: ERROR if any directory failed, WARNING if any command was
+    # refused or skipped, OK only if something actually built, else UNKNOWN.
+    statuses = {r["status"] for r in results}
+    if Status.ERROR.value in statuses:
+        status = Status.ERROR
+    elif Status.WARNING.value in statuses or skipped_commands:
+        status = Status.WARNING
+    elif Status.OK.value in statuses:
+        status = Status.OK
+    else:
+        status = Status.UNKNOWN
+
+    summary = f"Built {len(results)} ecosystem(s): " + ", ".join(summary_parts)
+    if skipped_commands:
+        summary += (
+            f". {len(skipped_commands)} command(s) skipped: "
+            f"at most {MAX_AUTO_BUILD_COMMANDS} builds run per call."
+        )
+
+    return _result(
+        status,
+        summary,
+        data={
+            "ecosystems": results,
+            "max_build_commands": MAX_AUTO_BUILD_COMMANDS,
+            "skipped_commands": skipped_commands,
+        },
+        issues=issues,
+        recommendations=[
+            f"{len(skipped_commands)} build command(s) were not run because of the "
+            f"{MAX_AUTO_BUILD_COMMANDS}-build cap; build those directories individually "
+            "with dev_build."
+        ]
+        if skipped_commands
+        else [],
+    )
+
+
+@mcp.tool()
+def dev_health_all(workspace: str = ".") -> dict[str, Any]:
+    """Scan the workspace root and its subdirectories for ecosystems and run a
+    health check on each. Returns detailed per-ecosystem reports including: health
+    score, runtime versions, dependency state, required services, issues, and
+    recommendations. Perfect for monorepos with multiple tech stacks."""
+    root = _resolve(workspace)
+    if not root.exists():
+        return _result(Status.ERROR, f"Workspace '{workspace}' does not exist.")
+
+    # Same scanner dev_build_all uses, so the two never disagree about which
+    # directories this repository has -- including the root itself.
+    ecosystems_to_check = _scan_build_targets(root)
+
+    if not ecosystems_to_check:
+        return _result(
+            Status.UNKNOWN,
+            "No recognized ecosystems found in the workspace root or its subdirectories.",
+            data={"ecosystems": []},
+        )
 
     results = []
     for dir_name, dir_path, ecosystems in ecosystems_to_check:
         report = compute_health(str(dir_path))
-        results.append({
-            "directory": dir_name,
-            "ecosystems": ecosystems,
-            "health_score": report.health_score,
-            "status": report.status.value,
-            "project_summary": report.project_summary,
-            "runtime_summary": report.runtime_summary,
-            "dependency_summary": report.dependency_summary,
-            "service_summary": report.service_summary,
-            "issues": [i.to_dict() for i in report.issues],
-            "issue_count": len(report.issues),
-            "recommendations": report.recommendations,
-            "recommendation_count": len(report.recommendations),
-        })
+        results.append(
+            {
+                "directory": dir_name,
+                "ecosystems": ecosystems,
+                "health_score": report.health_score,
+                "status": report.status.value,
+                "project_summary": report.project_summary,
+                "runtime_summary": report.runtime_summary,
+                "dependency_summary": report.dependency_summary,
+                "service_summary": report.service_summary,
+                "issues": [i.to_dict() for i in report.issues],
+                "issue_count": len(report.issues),
+                "recommendations": report.recommendations,
+                "recommendation_count": len(report.recommendations),
+            }
+        )
 
     # Aggregate status: ERROR if any subdirectory has ERROR, WARNING if any has WARNING, else OK
     if any(r["status"] == "error" for r in results):
@@ -501,12 +1008,22 @@ def dev_health_all(workspace: str = ".") -> dict[str, Any]:
         f"{r['directory']} ({r['health_score']}/100)" for r in results
     )
 
+    all_issues: list[dict[str, Any]] = []
+    all_recommendations: list[str] = []
+    for r in results:
+        issues = r.get("issues")
+        if isinstance(issues, list):
+            all_issues.extend(issues)
+        recommendations = r.get("recommendations")
+        if isinstance(recommendations, list):
+            all_recommendations.extend(recommendations)
+
     return _result(
         status,
         summary,
         data={"ecosystems": results},
-        issues=[issue for r in results for issue in r["issues"]],
-        recommendations=[rec for r in results for rec in r["recommendations"]],
+        issues=all_issues,
+        recommendations=all_recommendations,
     )
 
 

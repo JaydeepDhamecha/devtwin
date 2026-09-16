@@ -65,6 +65,13 @@ ALLOWED_EXECUTABLES = {
     # docker
     "docker",
     "docker-compose",
+    # generic task runners -- the generic adapter only ever emits a recognized
+    # target it found in the file itself (`make build`, `just test`), and the
+    # denylist below still blocks destructive targets such as `make clean`.
+    # Equivalent in risk to `npm run build`, which runs an arbitrary script.
+    "make",
+    "just",
+    "task",
 }
 
 # Explicit denylist of dangerous subcommands, even for allowlisted
