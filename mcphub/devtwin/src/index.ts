@@ -158,26 +158,35 @@ export default class DevTwinPlugin extends BasePlugin {
           group: 'execution',
           label: 'Check timeout (seconds)',
           fieldType: 'number',
-          description: 'Time allowed for a recognized test or lint command.',
+          description:
+            'Time allowed for a recognized test or lint command. The value that actually applies is the lower of this and the platform timeout budget below.',
         },
         buildTimeoutSeconds: {
           group: 'execution',
           label: 'Build timeout (seconds)',
           fieldType: 'number',
-          description: 'Time allowed for a recognized build command.',
+          description:
+            'Time allowed for a recognized build command. The value that actually applies is the lower of this and the platform timeout budget below, which is why the budget ships at the same 300s rather than overriding this silently.',
         },
         platformTimeoutBudgetSeconds: {
           group: 'execution',
           label: 'Platform timeout budget (seconds)',
           fieldType: 'number',
           description:
-            'Hard ceiling on every command timeout so a call stays inside the platform execution budget. Longer builds are reported as timed out.',
+            'Hard ceiling on every command timeout so a call stays inside the platform execution budget. It overrides the two timeouts above whenever it is lower, and a command still running at the ceiling is reported as timed out, never as failed. Defaults to 300s so the build timeout above governs out of the box; lower it to your deployment\'s real per-call limit.',
         },
         maxAutoCheckCommands: {
           group: 'limits',
           label: 'Max automatic check commands',
           fieldType: 'number',
           description: 'How many recognized checks run when the caller names none.',
+        },
+        maxAutoBuildCommands: {
+          group: 'limits',
+          label: 'Max automatic build commands',
+          fieldType: 'number',
+          description:
+            'How many builds a devtwin_build call runs, and the total devtwin_build_all runs across all directories. Anything past the cap is reported as skipped.',
         },
         maxOutputChars: {
           group: 'limits',

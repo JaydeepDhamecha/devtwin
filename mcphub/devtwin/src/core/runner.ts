@@ -9,7 +9,7 @@
 
 import { execFile } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join, resolve as resolvePath } from 'node:path';
 
 import type { CommandResult } from './models.js';
 
@@ -23,6 +23,20 @@ export const DEFAULT_TIMEOUT_SECONDS = 10;
  * done by us, not by the buffer limit.
  */
 export const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
+
+/**
+ * What `CommandResult.timed_out` means for every result this module builds:
+ * DevTwin stopped the process itself, so it never reached an exit status and
+ * there is no verdict to report -- neither a pass nor a failure. Two things
+ * cause it: the command outlived its timeout, and the command produced more
+ * than MAX_CAPTURE_BYTES of output. `returncode` is null in both cases, which
+ * is what keeps them out of the "failed" bucket callers partition on; a
+ * genuine non-zero exit always carries a number. The two are told apart by
+ * OUTPUT_OVERFLOW_NOTE, which is prefixed to `stderr` for the second.
+ */
+export const OUTPUT_OVERFLOW_NOTE =
+  `devtwin: stopped -- the command produced more than ${MAX_CAPTURE_BYTES} bytes of ` +
+  'output. It did not finish, so there is no pass or fail to report.';
 
 /** Resolve an executable on PATH without invoking a shell (the `which` equivalent). */
 export function which(executable: string): string | null {
@@ -48,6 +62,31 @@ export function which(executable: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Resolve the executable a caller asked for, honouring `cwd`.
+ *
+ * A bare name (`git`) is a PATH lookup and an absolute path is taken as
+ * given -- both are `which`'s job. Anything else is a path relative to the
+ * project being inspected: `./gradlew`, but equally `vendor/bin/phpunit` or
+ * `node_modules/.bin/tsc`. Those must be joined to the workspace, because
+ * `which` resolves relative paths against `process.cwd()` -- the plugin
+ * server's directory, which is not where the project lives. `which` is
+ * exported and used elsewhere, so the workspace-relative rule lives here in
+ * the call path rather than changing its contract.
+ */
+function resolveExecutable(executable: string, cwd?: string): string | null {
+  const isPathLike = executable.includes('/') || executable.includes('\\');
+  if (!isPathLike || isAbsolute(executable) || !cwd) return which(executable);
+
+  const candidate = resolvePath(cwd, executable);
+  try {
+    accessSync(candidate, constants.X_OK);
+    return candidate;
+  } catch {
+    return null;
+  }
 }
 
 function truncate(text: string): string {
@@ -77,19 +116,9 @@ export async function runCommand(args: string[], options: RunOptions = {}): Prom
   const rest = args.slice(1);
   const timeoutSeconds = options.timeout ?? DEFAULT_TIMEOUT_SECONDS;
 
-  // A relative executable such as ./gradlew resolves against cwd, not process.cwd().
-  let resolved: string | null;
-  if (executable.startsWith('./') && options.cwd) {
-    const candidate = join(options.cwd, executable.slice(2));
-    try {
-      accessSync(candidate, constants.X_OK);
-      resolved = candidate;
-    } catch {
-      resolved = null;
-    }
-  } else {
-    resolved = which(executable);
-  }
+  // A relative executable such as ./gradlew or vendor/bin/phpunit resolves
+  // against cwd, not process.cwd().
+  const resolved = resolveExecutable(executable, options.cwd);
 
   if (resolved === null) {
     return {
@@ -144,15 +173,23 @@ export async function runCommand(args: string[], options: RunOptions = {}): Prom
           }
 
           if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
-            // The command ran and produced more output than we allow. That is
-            // a result, not a failure to launch: keep what was captured.
+            // The command ran and produced more output than we allow, so Node
+            // killed it: it launched, but it never reached an exit status.
+            // `timed_out` is how this module says "we stopped it, there is no
+            // verdict" (see OUTPUT_OVERFLOW_NOTE above), and it is what keeps
+            // a merely noisy command out of the failed bucket -- a caller
+            // partitioning on `returncode === 0` would otherwise report a
+            // build error that never happened. The note in stderr is what
+            // distinguishes this from a command stopped at the timeout, and
+            // the null returncode what distinguishes both from a real
+            // non-zero exit. Keep whatever was captured before the kill.
             resolve({
               executable,
               args: rest,
               returncode: null,
               stdout: out,
-              stderr: err,
-              timed_out: false,
+              stderr: err ? `${OUTPUT_OVERFLOW_NOTE}\n${err}` : OUTPUT_OVERFLOW_NOTE,
+              timed_out: true,
               available: true,
               duration_ms,
             });

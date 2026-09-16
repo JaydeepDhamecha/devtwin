@@ -330,3 +330,175 @@ def test_dev_build_all_budget_is_not_spent_on_refused_commands(tmp_path: Path, m
     result = server.dev_build_all(str(tmp_path))
     assert invocations == [["npm", "run", "build"]]  # the real build still ran
     assert result["data"]["skipped_commands"] == []
+
+
+def _fake_timing_out_run(monkeypatch) -> None:
+    """Replace the runner so every command is killed at the timeout."""
+
+    def fake_run_command(args, cwd=None, timeout=None):
+        return CommandResult(
+            executable=args[0],
+            args=args,
+            returncode=None,
+            stdout="partial output",
+            stderr="",
+            timed_out=True,
+        )
+
+    monkeypatch.setattr("devtwin.server.run_command", fake_run_command)
+
+
+def test_dev_build_reports_all_recognized_commands(tmp_path: Path, monkeypatch):
+    """The per-call cap limits what runs, not what the caller is told exists --
+    otherwise a caller can never name the capped-out commands in `run`."""
+    _node_project(tmp_path)
+    many = [f"npm run build{i}" for i in range(server.MAX_AUTO_BUILD_COMMANDS + 3)]
+    _inject_adapter(monkeypatch, build=many)
+    _fake_passing_run(monkeypatch)
+
+    result = server.dev_build(str(tmp_path))
+    assert result["data"]["recognized_commands"] == many  # all of them, not just the capped run
+    assert len(result["data"]["results"]) == server.MAX_AUTO_BUILD_COMMANDS
+    assert len(result["data"]["skipped_commands"]) == 3
+
+
+def test_timed_out_build_is_not_reported_as_a_failure(tmp_path: Path, monkeypatch):
+    """A build killed at the timeout never reached a verdict. Calling it a
+    failure is indistinguishable from a real compile error the user must fix."""
+    _node_project(tmp_path)
+    _inject_adapter(monkeypatch, build=["npm run build"])
+    _fake_timing_out_run(monkeypatch)
+
+    result = server.dev_build(str(tmp_path))
+    assert result["data"]["failed_count"] == 0
+    assert result["data"]["timed_out_count"] == 1
+    assert result["status"] == "warning"  # not "error"
+    assert "timed out" in result["summary"]
+
+
+def test_unavailable_tool_is_not_reported_as_a_failure(tmp_path: Path, monkeypatch):
+    """A missing executable is not a compilation error."""
+    _node_project(tmp_path)
+    _inject_adapter(monkeypatch, build=["npm run build"])
+
+    def fake_run_command(args, cwd=None, timeout=None):
+        return CommandResult(
+            executable=args[0], args=args, returncode=None, stdout="", stderr="", available=False
+        )
+
+    monkeypatch.setattr("devtwin.server.run_command", fake_run_command)
+
+    result = server.dev_build(str(tmp_path))
+    assert result["data"]["failed_count"] == 0
+    assert result["data"]["unavailable_count"] == 1
+    assert result["status"] == "warning"
+
+
+def test_dev_build_all_directory_status_accounts_for_skipped(tmp_path: Path, monkeypatch):
+    """A directory whose first build ran clean while later ones were dropped by
+    the shared budget must not report its own entry as fully ok."""
+    first = server.COMMON_MONOREPO_DIRS[0]
+    _node_project(tmp_path / first)
+    _inject_adapter(
+        monkeypatch,
+        per_dir={
+            first: {"build": [f"npm run build{i}" for i in range(server.MAX_AUTO_BUILD_COMMANDS + 2)]}
+        },
+    )
+    _fake_passing_run(monkeypatch)
+
+    result = server.dev_build_all(str(tmp_path))
+    entry = {e["directory"]: e for e in result["data"]["ecosystems"]}[first]
+    assert entry["skipped_commands"]  # the budget dropped some of this directory's builds
+    assert entry["status"] != "ok"
+
+
+def test_timed_out_build_explains_itself(tmp_path: Path, monkeypatch):
+    """A timed-out command must carry an explanation and a next step, not just
+    a count in the summary."""
+    _node_project(tmp_path)
+    _inject_adapter(monkeypatch, build=["npm run build"])
+    _fake_timing_out_run(monkeypatch)
+
+    result = server.dev_build(str(tmp_path))
+    issue = next(i for i in result["issues"] if i["code"] == "build.commands_timed_out")
+    assert issue["evidence"] == ["npm run build"]
+    assert "not a failure" in issue["message"]
+    assert issue["recommendation"]
+
+
+def test_refusal_issue_label_identifies_the_directory(tmp_path: Path, monkeypatch):
+    """The issue title must say WHICH directory refused, so several dev_build
+    results are still tellable apart."""
+    _node_project(tmp_path)
+    _inject_adapter(monkeypatch, build=[REFUSED_BUILD])
+
+    result = server.dev_build(str(tmp_path))
+    issue = next(i for i in result["issues"] if i["code"] == "build.commands_refused")
+    assert str(tmp_path.resolve()) in issue["title"]
+
+
+def test_unparseable_command_is_not_reported_as_an_allowlist_refusal(tmp_path: Path, monkeypatch):
+    """An unbalanced quote needs the adapter fixed, not the command allowlisted."""
+    _node_project(tmp_path)
+    _inject_adapter(monkeypatch, build=["npm run build --name 'unbalanced"])
+
+    result = server.dev_build(str(tmp_path))
+    codes = {i["code"] for i in result["issues"]}
+    assert "build.commands_unparseable" in codes
+    assert "build.commands_refused" not in codes
+
+
+def test_run_argument_does_not_bypass_the_build_cap(tmp_path: Path, monkeypatch):
+    """The cap bounds wall clock, so naming every command explicitly must not
+    lift it -- otherwise a caller that wants everything just asks for everything."""
+    _node_project(tmp_path)
+    many = [f"npm run build{i}" for i in range(server.MAX_AUTO_BUILD_COMMANDS + 7)]
+    _inject_adapter(monkeypatch, build=many)
+    invocations = _fake_passing_run(monkeypatch)
+
+    result = server.dev_build(str(tmp_path), run=many)
+    assert len(invocations) == server.MAX_AUTO_BUILD_COMMANDS
+    assert len(result["data"]["skipped_commands"]) == 7
+    assert result["status"] != "ok"
+
+
+def _fake_unavailable_run(monkeypatch) -> None:
+    """Replace the runner so every executable is missing from PATH."""
+
+    def fake_run_command(args, cwd=None, timeout=None):
+        return CommandResult(
+            executable=args[0], args=args, returncode=None, stdout="", stderr="", available=False
+        )
+
+    monkeypatch.setattr("devtwin.server.run_command", fake_run_command)
+
+
+def test_dev_build_all_explains_a_missing_build_tool(tmp_path: Path, monkeypatch):
+    """A directory whose toolchain is not installed used to return a bare
+    warning with every count zero and an empty issues list -- the caller was
+    told something was wrong with no way to find out what."""
+    first = server.COMMON_MONOREPO_DIRS[0]
+    _node_project(tmp_path / first)
+    _inject_adapter(monkeypatch, per_dir={first: {"build": ["npm run build"]}})
+    _fake_unavailable_run(monkeypatch)
+
+    result = server.dev_build_all(str(tmp_path))
+    entry = {e["directory"]: e for e in result["data"]["ecosystems"]}[first]
+    assert entry["unavailable_count"] == 1
+    assert entry["failed_count"] == 0
+    assert any(i["code"] == "build.tool_not_installed" for i in result["issues"])
+    assert "tool missing" in result["summary"]
+
+
+def test_dev_build_all_summary_distinguishes_a_timeout_from_a_failure(tmp_path: Path, monkeypatch):
+    """The summary line is what a model reads first, so a timed-out build must
+    not look like a compile error there."""
+    first = server.COMMON_MONOREPO_DIRS[0]
+    _node_project(tmp_path / first)
+    _inject_adapter(monkeypatch, per_dir={first: {"build": ["npm run build"]}})
+    _fake_timing_out_run(monkeypatch)
+
+    result = server.dev_build_all(str(tmp_path))
+    assert "timed out" in result["summary"]
+    assert "failed" not in result["summary"]

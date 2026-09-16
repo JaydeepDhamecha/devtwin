@@ -23,18 +23,73 @@ function errorResponse(message: string): McpToolResponse {
   return { content: [{ type: 'text', text: message }], isError: true };
 }
 
-/** Read `workspace`, falling back to the manager's configured default. */
+/**
+ * Read `workspace`, or `''` when the caller omitted it.
+ *
+ * The empty string is deliberate: the manager resolves a workspace as
+ * `workspace || defaultWorkspace`, so an omitted argument has to arrive as a
+ * falsy value for the administrator's configured default to apply. Sending a
+ * literal `'.'` from here would silently pin every call to the plugin
+ * server's own working directory instead.
+ */
 function workspaceArg(args: Record<string, unknown>): string {
   const value = args['workspace'];
-  return typeof value === 'string' && value.length > 0 ? value : '.';
+  return typeof value === 'string' && value.length > 0 ? value : '';
 }
 
-/** Read an optional string array, ignoring anything that is not a string. */
-function stringArrayArg(args: Record<string, unknown>, key: string): string[] | null {
+/**
+ * The caller's command selection: absent, usable, or malformed.
+ *
+ * `value: null` is the absent case -- the manager reads it as "the caller
+ * named nothing" and falls back to its own capped default selection.
+ */
+type SelectionArg = { ok: true; value: string[] | null } | { ok: false; reason: string };
+
+/**
+ * Read an optional array of command names.
+ *
+ * A malformed value must never collapse into the absent case. It used to:
+ * anything that was not an array of strings became `null`, and `null` makes
+ * the manager run every recognized command with nothing marked as rejected.
+ * So `{run: 'npm run build'}` -- a string where an array belongs -- silently
+ * ran the whole project instead of the one command named, and the result
+ * looked like it had been asked for. A selection we cannot use goes back to
+ * the caller as an error rather than escalating into a broader action.
+ */
+function commandSelectionArg(args: Record<string, unknown>, key: string): SelectionArg {
   const value = args[key];
-  if (!Array.isArray(value)) return null;
-  const items = value.filter((v): v is string => typeof v === 'string');
-  return items.length > 0 ? items : null;
+  if (value === undefined || value === null) return { ok: true, value: null };
+
+  if (!Array.isArray(value)) {
+    return {
+      ok: false,
+      reason: `\`${key}\` must be an array of command strings, not ${typeof value}.`,
+    };
+  }
+  if (value.length === 0) {
+    return { ok: false, reason: `\`${key}\` was an empty array, so it names no command.` };
+  }
+
+  const items = value.filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+  if (items.length !== value.length) {
+    // Dropping the unusable entries and running the rest would report a
+    // selection DevTwin never actually attempted in full.
+    return {
+      ok: false,
+      reason:
+        `\`${key}\` must contain only non-empty command strings; ` +
+        `${value.length - items.length} of ${value.length} entries are not.`,
+    };
+  }
+  return { ok: true, value: items };
+}
+
+/** Same message everywhere: what was wrong, and the two ways to fix it. */
+function malformedSelection(toolName: string, reason: string): McpToolResponse {
+  return errorResponse(
+    `${toolName} did not run: ${reason} Name the commands to run as an array of ` +
+      'strings, or omit `run` to let DevTwin choose. Nothing was executed.',
+  );
 }
 
 export async function handleToolCall(
@@ -91,10 +146,16 @@ export async function handleToolCall(
       }
       case 'devtwin_prepare':
         return respond(await manager.prepare(workspaceArg(a)));
-      case 'devtwin_check':
-        return respond(await manager.check(workspaceArg(a), stringArrayArg(a, 'run')));
-      case 'devtwin_build':
-        return respond(await manager.build(workspaceArg(a), stringArrayArg(a, 'run')));
+      case 'devtwin_check': {
+        const selection = commandSelectionArg(a, 'run');
+        if (!selection.ok) return malformedSelection(toolName, selection.reason);
+        return respond(await manager.check(workspaceArg(a), selection.value));
+      }
+      case 'devtwin_build': {
+        const selection = commandSelectionArg(a, 'run');
+        if (!selection.ok) return malformedSelection(toolName, selection.reason);
+        return respond(await manager.build(workspaceArg(a), selection.value));
+      }
       case 'devtwin_build_all':
         return respond(await manager.buildAll(workspaceArg(a)));
 

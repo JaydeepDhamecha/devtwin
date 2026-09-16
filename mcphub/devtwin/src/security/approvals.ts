@@ -1,34 +1,63 @@
 /**
  * Action classification for anything that isn't a pure read.
  *
- * Every step DevTwin proposes (in `dev_prepare` plans, mainly) carries an
+ * Every step DevTwin proposes (in `devtwin_prepare` plans, mainly) carries an
  * `ActionClass` so a calling agent -- or the human behind it -- can decide
  * what's safe to auto-run versus what needs a human to say "yes".
  * DevTwin itself never escalates a plan step into an execution; it only
  * classifies and describes.
+ *
+ * The names here are this plugin's `devtwin_*` tool names, not the upstream
+ * Python server's `dev_*` ones: an unrecognized name falls through to
+ * REQUIRES_APPROVAL, so a stale name turns every read into an approval prompt.
+ * `classifiedToolNames()` exists so a test can hold this file to `tools.ts`.
  */
 
 import { ActionClass, type Capability } from '../core/models.js';
 
 export const READ_ONLY_TOOLS = new Set([
-  'dev_detect',
-  'dev_health',
-  'dev_drift',
-  'dev_explain_failure',
-  'dev_project_info',
-  'dev_dependencies',
-  'dev_services',
-  'dev_precommit',
+  'devtwin_detect',
+  'devtwin_health',
+  'devtwin_health_all',
+  'devtwin_drift',
+  'devtwin_explain_failure',
+  'devtwin_project_info',
+  'devtwin_dependencies',
+  'devtwin_services',
+  'devtwin_precommit',
+  // Settings tools that only report: DevTwin's own state, never the project's.
+  'devtwin_status',
+  'devtwin_health_check',
+  'devtwin_get_logs',
 ]);
 
-// dev_check and dev_prepare execute recognized, allowlisted commands
-// (tests/build/lint) -- "safe" in the sense of non-destructive, but not
-// purely read-only since they may leave build artifacts behind.
-export const SAFE_EXECUTION_TOOLS = new Set(['dev_check']);
+// devtwin_check, devtwin_build and devtwin_build_all execute recognized,
+// allowlisted commands (tests/build/lint) -- "safe" in the sense of
+// non-destructive, but not purely read-only since they may leave build
+// artifacts behind.
+export const SAFE_EXECUTION_TOOLS = new Set([
+  'devtwin_check',
+  'devtwin_build',
+  'devtwin_build_all',
+]);
 
-// dev_prepare only plans by default; it never executes without a separate,
+// devtwin_prepare only plans by default; it never executes without a separate,
 // explicit human approval step outside of this plugin's scope.
-export const PLANNING_TOOLS = new Set(['dev_prepare']);
+export const PLANNING_TOOLS = new Set(['devtwin_prepare']);
+
+// Writing or clearing DevTwin's own settings changes what later calls are
+// allowed to do (workspace roots, command execution), so it is never automatic.
+export const CONFIGURATION_TOOLS = new Set(['devtwin_configure', 'devtwin_remove']);
+
+/** Every tool with an explicit classification; `tools.ts` must match this set. */
+export function classifiedToolNames(): string[] {
+  return [
+    ...READ_ONLY_TOOLS,
+    ...SAFE_EXECUTION_TOOLS,
+    ...PLANNING_TOOLS,
+    ...CONFIGURATION_TOOLS,
+  ];
+}
 
 export function classifyTool(toolName: string): ActionClass {
   if (READ_ONLY_TOOLS.has(toolName)) return ActionClass.READ_ONLY;
@@ -55,6 +84,13 @@ export function capabilityTable(): Capability[] {
       name,
       action_class: ActionClass.READ_ONLY,
       description: 'Produces a plan only; never executes or mutates the machine.',
+    });
+  }
+  for (const name of [...CONFIGURATION_TOOLS].sort()) {
+    caps.push({
+      name,
+      action_class: ActionClass.REQUIRES_APPROVAL,
+      description: "Changes DevTwin's own configuration; never touches the project.",
     });
   }
   return caps;

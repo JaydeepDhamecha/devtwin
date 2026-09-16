@@ -192,6 +192,12 @@ export class JvmAdapter extends EcosystemAdapter {
   /**
    * Pick the right wrapper command for the current OS, without assuming
    * both `unixName` and `winName` were committed side by side.
+   *
+   * Both branches return a `./`-prefixed path, and that prefix is load-bearing:
+   * the runner reads a separator-free name as a PATH lookup, so a bare
+   * `gradlew.bat` would never find the wrapper committed in the workspace and
+   * every JVM build on Windows would report the tool as not installed. Forward
+   * slashes are fine on Windows -- `path.resolve` accepts them.
    */
   private wrapperInvocation(
     root: string,
@@ -200,7 +206,7 @@ export class JvmAdapter extends EcosystemAdapter {
     fallback: string,
   ): string {
     if (process.platform === 'win32' && pathExists(join(root, winName))) {
-      return winName;
+      return `./${winName}`;
     }
     if (pathExists(join(root, unixName))) {
       return `./${unixName}`;

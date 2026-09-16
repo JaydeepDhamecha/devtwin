@@ -8,12 +8,19 @@
 
 import type { McpToolDefinition } from '@mcphub/core/src/mcp/plugin.interface.js';
 
-/** Shared `workspace` parameter -- the directory a tool inspects. */
+/**
+ * Shared `workspace` parameter -- the directory a tool inspects.
+ *
+ * Deliberately no JSON Schema `default`. Clients that materialize schema
+ * defaults into the arguments they send would turn every omitted workspace
+ * into a literal `'.'`, which resolves to the plugin server's own working
+ * directory and makes the administrator's `defaultWorkspace` unreachable.
+ * Omission has to stay omission all the way to the manager.
+ */
 const workspaceProperty = {
   type: 'string',
   description:
-    'Absolute or relative path to the project directory to inspect. Defaults to the configured defaultWorkspace.',
-  default: '.',
+    "Absolute or relative path to the project directory to inspect. Omit it entirely to use the administrator-configured defaultWorkspace -- do not send '.' for that, which pins the call to the plugin server's own working directory.",
 };
 
 export const tools: McpToolDefinition[] = [

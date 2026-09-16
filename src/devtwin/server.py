@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import shlex
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from mcp.server.mcpserver import MCPServer
 
@@ -112,7 +112,7 @@ def _run_recognized_commands(
                 {
                     "command": command_str,
                     "executed": False,
-                    "reason": "command string could not be parsed into arguments",
+                    "reason": UNPARSEABLE_REASON,
                 }
             )
             continue
@@ -138,33 +138,53 @@ def _run_recognized_commands(
     return results, recognized, rejected
 
 
-def _partition_results(
-    results: list[dict[str, Any]],
-) -> tuple[
-    list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]
-]:
-    """Split command results into (passed, failed, refused, unavailable).
+class Outcomes(NamedTuple):
+    """Command results split by what actually happened to each command."""
 
-    Three things that are not failures get their own buckets. A command refused
-    by the allowlist never ran. A command whose executable is not installed
-    never ran either -- reporting a missing `npm` as a failed build would
-    invent a compilation error that does not exist. Only a command that
-    actually executed and returned non-zero is a failure.
+    passed: list[dict[str, Any]]
+    failed: list[dict[str, Any]]
+    refused: list[dict[str, Any]]
+    unavailable: list[dict[str, Any]]
+    timed_out: list[dict[str, Any]]
+
+    @property
+    def executed(self) -> int:
+        """Commands that actually ran, whatever the result."""
+        return len(self.passed) + len(self.failed) + len(self.timed_out)
+
+
+def _partition_results(results: list[dict[str, Any]]) -> Outcomes:
+    """Split command results by outcome.
+
+    Only a command that ran to completion and returned non-zero is a failure.
+    Three other things are not: a command refused by the allowlist never ran; a
+    command whose executable is not installed never ran either (reporting a
+    missing `npm` as a failed build invents a compilation error that does not
+    exist); and a command killed at the timeout did run but never reached a
+    verdict, so calling it a failure is indistinguishable from a real compile
+    error the user must go fix.
     """
-    passed = [r for r in results if r.get("executed") and r.get("passed")]
-    refused = [r for r in results if not r.get("executed")]
-    unavailable = [
-        r
-        for r in results
-        if r.get("executed") and not (r.get("result") or {}).get("available", True)
-    ]
-    unavailable_ids = {id(r) for r in unavailable}
-    failed = [
-        r
-        for r in results
-        if r.get("executed") and not r.get("passed") and id(r) not in unavailable_ids
-    ]
-    return passed, failed, refused, unavailable
+    passed: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    refused: list[dict[str, Any]] = []
+    unavailable: list[dict[str, Any]] = []
+    timed_out: list[dict[str, Any]] = []
+
+    for r in results:
+        if not r.get("executed"):
+            refused.append(r)
+            continue
+        outcome = r.get("result") or {}
+        if not outcome.get("available", True):
+            unavailable.append(r)
+        elif outcome.get("timed_out"):
+            timed_out.append(r)
+        elif r.get("passed"):
+            passed.append(r)
+        else:
+            failed.append(r)
+
+    return Outcomes(passed, failed, refused, unavailable, timed_out)
 
 
 def _execution_status(
@@ -180,10 +200,10 @@ def _execution_status(
     mean "you asked for something that did not run", so neither can leave the
     result looking clean.
     """
-    _, failed, refused, unavailable = _partition_results(results)
-    if failed:
+    o = _partition_results(results)
+    if o.failed:
         return Status.ERROR
-    if refused or unavailable or rejected or skipped:
+    if o.refused or o.unavailable or o.timed_out or rejected or skipped:
         # Nothing that ran failed, but something we were asked to run never did.
         return Status.WARNING
     return Status.OK if results else Status.UNKNOWN
@@ -201,8 +221,7 @@ def _execution_summary(
     Each clause is emitted only when it is non-zero, so a clean run reads
     "Ran 2 build(s), 0 failed." and nothing more.
     """
-    passed, failed, refused, unavailable = _partition_results(results)
-    executed = len(passed) + len(failed)
+    o = _partition_results(results)
 
     if not results:
         if rejected:
@@ -212,16 +231,53 @@ def _execution_summary(
             )
         return f"No recognized {kind} commands were found for this project."
 
-    summary = f"Ran {executed} {kind}(s), {len(failed)} failed"
-    if refused:
-        summary += f", {len(refused)} refused (not in DevTwin's allowlist)"
-    if unavailable:
-        summary += f", {len(unavailable)} skipped (tool not installed)"
+    summary = f"Ran {o.executed} {kind}(s), {len(o.failed)} failed"
+    if o.timed_out:
+        summary += f", {len(o.timed_out)} timed out"
+    if o.refused:
+        summary += f", {len(o.refused)} refused (not in DevTwin's allowlist)"
+    if o.unavailable:
+        summary += f", {len(o.unavailable)} skipped (tool not installed)"
     if skipped:
         summary += f", {len(skipped)} not attempted (per-call cap)"
     if rejected:
         summary += f", {len(rejected)} unrecognized"
     return summary + "."
+
+
+UNPARSEABLE_REASON = "command string could not be parsed into arguments"
+
+
+def _refusal_issues(
+    directory: str, refused: list[dict[str, Any]], kind: str = "build"
+) -> list[dict[str, Any]]:
+    """Split refusals by cause.
+
+    A command the allowlist rejected and a command DevTwin could not parse need
+    different fixes -- telling someone to get an unbalanced quote allowlisted
+    sends them after the wrong thing.
+    """
+    unparseable = [r for r in refused if r.get("reason") == UNPARSEABLE_REASON]
+    not_allowed = [r for r in refused if r.get("reason") != UNPARSEABLE_REASON]
+
+    issues: list[dict[str, Any]] = []
+    if not_allowed:
+        issues.append(_refused_issue(directory, not_allowed, kind=kind))
+    if unparseable:
+        issues.append(
+            {
+                "severity": "medium",
+                "code": f"{kind}.commands_unparseable",
+                "title": f"{kind.capitalize()} command(s) in '{directory}' could not be parsed",
+                "message": (
+                    "DevTwin could not split these into arguments, usually an "
+                    "unbalanced quote in the command the adapter produced."
+                ),
+                "evidence": [str(r.get("command")) for r in unparseable],
+                "recommendation": "Report this; the command DevTwin derived is malformed.",
+            }
+        )
+    return issues
 
 
 def _refused_issue(
@@ -235,6 +291,39 @@ def _refused_issue(
         "message": f"These commands are not in DevTwin's allowlist, so the {kind} did not run.",
         "evidence": [str(r.get("command")) for r in refused],
         "recommendation": "Run them yourself; DevTwin cannot report a pass or a failure for them.",
+    }
+
+
+def _timed_out_issue(
+    directory: str, timed_out: list[dict[str, Any]], timeout: int, kind: str = "build"
+) -> dict[str, Any]:
+    """A timed-out command reached no verdict. Say so, and say what to do next."""
+    return {
+        "severity": "medium",
+        "code": f"{kind}.commands_timed_out",
+        "title": f"{kind.capitalize()} command(s) in '{directory}' were stopped at the timeout",
+        "message": (
+            f"These commands were still running after {timeout}s and were stopped. "
+            "That is not a failure -- DevTwin has no result for them either way."
+        ),
+        "evidence": [str(r.get("command")) for r in timed_out],
+        "recommendation": (
+            "Run them yourself, or raise the timeout if this project legitimately "
+            "builds for longer."
+        ),
+    }
+
+
+def _unavailable_issue(directory: str, unavailable: list[dict[str, Any]]) -> dict[str, Any]:
+    """The build tool is not installed. That is not a build failure, but it does
+    need saying -- otherwise the directory is a bare WARNING with nothing in it."""
+    return {
+        "severity": "medium",
+        "code": "build.tool_not_installed",
+        "title": f"Build tool(s) for '{directory}' are not installed",
+        "message": "These commands could not start because their executable is not on PATH.",
+        "evidence": [str(r.get("command")) for r in unavailable],
+        "recommendation": "Install the toolchain, or run dev_drift to see what this project expects.",
     }
 
 
@@ -424,15 +513,18 @@ def dev_check(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
     for a in adapters:
         recognized.extend(a.test_commands)
 
-    to_run_full = recognized[:MAX_AUTO_CHECK_COMMANDS] if not run else recognized
+    # The cap is a wall-clock bound, so an explicit `run` is subject to it too:
+    # otherwise a caller that wants everything simply names everything.
+    selected = [c for c in run if c in recognized] if run else recognized
+    to_run_full = selected[:MAX_AUTO_CHECK_COMMANDS]
     # Commands dropped by the cap were recognized but never attempted; saying so
     # is the difference between "your checks pass" and "5 of your 8 checks pass".
-    skipped = [c for c in recognized if c not in to_run_full]
+    skipped = [c for c in selected if c not in to_run_full]
     results, _, rejected = _run_recognized_commands(
         path, to_run_full, CHECK_TIMEOUT_SECONDS, run=run
     )
 
-    passed, failed, refused, unavailable = _partition_results(results)
+    o = _partition_results(results)
     status = _execution_status(results, rejected=rejected, skipped=skipped)
     return _result(
         status,
@@ -443,14 +535,22 @@ def dev_check(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
             "rejected": rejected,
             "skipped_commands": skipped,
             "max_check_commands": MAX_AUTO_CHECK_COMMANDS,
-            "executed_count": len(passed) + len(failed),
-            "passed_count": len(passed),
-            "failed_count": len(failed),
-            "refused_count": len(refused),
-            "refused_commands": [str(r.get("command")) for r in refused],
-            "unavailable_count": len(unavailable),
+            "executed_count": o.executed,
+            "passed_count": len(o.passed),
+            "failed_count": len(o.failed),
+            "refused_count": len(o.refused),
+            "refused_commands": [str(r.get("command")) for r in o.refused],
+            "unavailable_count": len(o.unavailable),
+            "timed_out_count": len(o.timed_out),
         },
-        issues=[_refused_issue(ROOT_DIR_LABEL, refused, kind="check")] if refused else [],
+        issues=(
+            _refusal_issues(str(path), o.refused, kind="check")
+            + (
+                [_timed_out_issue(str(path), o.timed_out, CHECK_TIMEOUT_SECONDS, kind="check")]
+                if o.timed_out
+                else []
+            )
+        ),
     )
 
 
@@ -638,14 +738,14 @@ def dev_build(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
 
     # Same per-call ceiling dev_check and dev_build_all enforce: at 300s each,
     # an uncapped list can hold a single tool call open for twenty minutes.
-    to_run_full = recognized[:MAX_AUTO_BUILD_COMMANDS] if not run else recognized
-    skipped = [c for c in recognized if c not in to_run_full]
-    results, recognized, rejected = _run_recognized_commands(
+    selected = [c for c in run if c in recognized] if run else recognized
+    to_run_full = selected[:MAX_AUTO_BUILD_COMMANDS]
+    skipped = [c for c in selected if c not in to_run_full]
+    results, _, rejected = _run_recognized_commands(
         path, to_run_full, BUILD_TIMEOUT_SECONDS, run=run
     )
 
-    passed, failed, refused, unavailable = _partition_results(results)
-    executed = len(passed) + len(failed)
+    o = _partition_results(results)
     status = _execution_status(results, rejected=rejected, skipped=skipped)
     return _result(
         status,
@@ -656,14 +756,22 @@ def dev_build(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
             "rejected": rejected,
             "skipped_commands": skipped,
             "max_build_commands": MAX_AUTO_BUILD_COMMANDS,
-            "executed_count": executed,
-            "passed_count": len(passed),
-            "failed_count": len(failed),
-            "refused_count": len(refused),
-            "refused_commands": [str(r.get("command")) for r in refused],
-            "unavailable_count": len(unavailable),
+            "executed_count": o.executed,
+            "passed_count": len(o.passed),
+            "failed_count": len(o.failed),
+            "refused_count": len(o.refused),
+            "refused_commands": [str(r.get("command")) for r in o.refused],
+            "unavailable_count": len(o.unavailable),
+            "timed_out_count": len(o.timed_out),
         },
-        issues=[_refused_issue(str(workspace), refused)] if refused else [],
+        issues=(
+            _refusal_issues(str(path), o.refused)
+            + (
+                [_timed_out_issue(str(path), o.timed_out, BUILD_TIMEOUT_SECONDS)]
+                if o.timed_out
+                else []
+            )
+        ),
     )
 
 
@@ -704,18 +812,23 @@ def dev_build_all(workspace: str = ".") -> dict[str, Any]:
         skipped_commands.extend(skipped)
 
         build_results, _, _ = _run_recognized_commands(dir_path, to_run, BUILD_TIMEOUT_SECONDS)
-        passed_builds, failed_builds, refused_builds, _unavailable = _partition_results(
-            build_results
-        )
+        ob = _partition_results(build_results)
         # The budget exists to bound wall-clock time, so only builds that
         # actually ran spend it. Charging for a command the allowlist refused
         # would exhaust the budget on zero work and report the real builds
         # further down the scan as "skipped".
-        budget -= len(passed_builds) + len(failed_builds)
+        budget -= ob.executed
 
-        build_status = _execution_status(build_results)
-        if refused_builds:
-            issues.append(_refused_issue(dir_name, refused_builds))
+        # Finding: the per-directory status omitted `skipped`, so a directory
+        # whose first build ran clean while later ones were dropped by the
+        # shared budget reported "ok" despite its own skipped list.
+        build_status = _execution_status(build_results, skipped=skipped)
+        if ob.refused:
+            issues.append(_refused_issue(dir_name, ob.refused))
+        if ob.timed_out:
+            issues.append(_timed_out_issue(dir_name, ob.timed_out, BUILD_TIMEOUT_SECONDS))
+        if ob.unavailable:
+            issues.append(_unavailable_issue(dir_name, ob.unavailable))
         results.append(
             {
                 "directory": dir_name,
@@ -723,17 +836,25 @@ def dev_build_all(workspace: str = ".") -> dict[str, Any]:
                 "status": build_status.value,
                 "build_commands": build_commands,
                 "build_results": build_results,
-                "executed_count": len(passed_builds) + len(failed_builds),
-                "passed_count": len(passed_builds),
-                "failed_count": len(failed_builds),
-                "refused_count": len(refused_builds),
+                "executed_count": ob.executed,
+                "passed_count": len(ob.passed),
+                "failed_count": len(ob.failed),
+                "refused_count": len(ob.refused),
+                "timed_out_count": len(ob.timed_out),
+                "unavailable_count": len(ob.unavailable),
                 "skipped_commands": skipped,
             }
         )
 
-        part = f"{dir_name} ({len(passed_builds)}/{len(passed_builds) + len(failed_builds)} passed"
-        if refused_builds:
-            part += f", {len(refused_builds)} refused"
+        part = f"{dir_name} ({len(ob.passed)}/{ob.executed} passed"
+        if ob.failed:
+            part += f", {len(ob.failed)} failed"
+        if ob.timed_out:
+            part += f", {len(ob.timed_out)} timed out"
+        if ob.unavailable:
+            part += f", {len(ob.unavailable)} tool missing"
+        if ob.refused:
+            part += f", {len(ob.refused)} refused"
         if skipped:
             part += f", {len(skipped)} skipped"
         summary_parts.append(part + ")")

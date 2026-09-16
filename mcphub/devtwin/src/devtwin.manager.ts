@@ -34,6 +34,9 @@ import { configureEnvSource } from './system/environment.js';
 import { getOsInfo } from './system/os.js';
 import { applyConfig, parseConfig, type DevTwinConfig } from './config.schema.js';
 
+/** Label the monorepo scans use for the workspace root itself. */
+const ROOT_DIR_LABEL = '.';
+
 /** Filename fragments that suggest a staged file carries credentials. */
 const SECRET_FILE_PATTERNS = [
   '.env',
@@ -62,6 +65,170 @@ interface CommandOutcome {
   result?: CommandResult;
   passed?: boolean;
   timeout_clamped?: boolean;
+}
+
+/**
+ * Command outcomes split by what actually happened to them.
+ *
+ * Only `failed` is a failure of the project. A command the allowlist refused
+ * never ran; a command whose executable is not installed never ran either --
+ * reporting a missing `npm` as a failed build would invent a compilation
+ * error that does not exist; and a command DevTwin stopped at its own timeout
+ * says nothing about whether the build works, only that it outlived the
+ * timeout budget.
+ */
+interface OutcomePartition {
+  passed: CommandOutcome[];
+  failed: CommandOutcome[];
+  refused: CommandOutcome[];
+  unavailable: CommandOutcome[];
+  timedOut: CommandOutcome[];
+}
+
+function partitionResults(results: CommandOutcome[]): OutcomePartition {
+  const partition: OutcomePartition = {
+    passed: [],
+    failed: [],
+    refused: [],
+    unavailable: [],
+    timedOut: [],
+  };
+  for (const outcome of results) {
+    if (!outcome.executed) {
+      partition.refused.push(outcome);
+    } else if (outcome.result && !outcome.result.available) {
+      partition.unavailable.push(outcome);
+    } else if (outcome.result?.timed_out) {
+      partition.timedOut.push(outcome);
+    } else if (outcome.passed) {
+      partition.passed.push(outcome);
+    } else {
+      partition.failed.push(outcome);
+    }
+  }
+  return partition;
+}
+
+/** Commands that really started: the only ones whose outcome describes the project. */
+function executedCount(partition: OutcomePartition): number {
+  return partition.passed.length + partition.failed.length + partition.timedOut.length;
+}
+
+/**
+ * Status for a set of command results, never reporting a run that did not
+ * happen as OK.
+ *
+ * `rejected` are names the caller asked for that DevTwin does not recognize,
+ * and `skipped` are recognized commands dropped for the per-call cap. Both
+ * mean "you asked for something that did not run", so neither can leave the
+ * result looking clean.
+ */
+function executionStatus(
+  results: CommandOutcome[],
+  rejected: string[] = [],
+  skipped: string[] = [],
+): Status {
+  const { failed, refused, unavailable, timedOut } = partitionResults(results);
+  if (failed.length > 0) return Status.ERROR;
+  if (
+    refused.length > 0 ||
+    unavailable.length > 0 ||
+    timedOut.length > 0 ||
+    rejected.length > 0 ||
+    skipped.length > 0
+  ) {
+    // Nothing that ran failed, but something we were asked to run never did.
+    return Status.WARNING;
+  }
+  return results.length > 0 ? Status.OK : Status.UNKNOWN;
+}
+
+/**
+ * One sentence covering every outcome, including the ones that did not run.
+ * Shared by devtwin_check and devtwin_build so their wording cannot drift;
+ * each clause is emitted only when it is non-zero, so a clean run reads
+ * "Ran 2 build(s), 0 failed." and nothing more.
+ */
+function executionSummary(
+  kind: string,
+  results: CommandOutcome[],
+  recognized: string[],
+  rejected: string[],
+  skipped: string[],
+): string {
+  const partition = partitionResults(results);
+
+  if (results.length === 0) {
+    if (rejected.length > 0) {
+      return (
+        `None of the requested command(s) are recognized ${kind} commands ` +
+        `for this project; ${recognized.length} recognized command(s) available.`
+      );
+    }
+    return `No recognized ${kind} commands were found for this project.`;
+  }
+
+  let summary = `Ran ${executedCount(partition)} ${kind}(s), ${partition.failed.length} failed`;
+  if (partition.timedOut.length > 0) {
+    summary += `, ${partition.timedOut.length} timed out (no pass or fail can be reported)`;
+  }
+  if (partition.refused.length > 0) {
+    summary += `, ${partition.refused.length} refused (not in DevTwin's allowlist)`;
+  }
+  if (partition.unavailable.length > 0) {
+    summary += `, ${partition.unavailable.length} skipped (tool not installed)`;
+  }
+  if (skipped.length > 0) {
+    summary += `, ${skipped.length} not attempted (per-call cap)`;
+  }
+  if (rejected.length > 0) {
+    summary += `, ${rejected.length} unrecognized`;
+  }
+  return `${summary}.`;
+}
+
+/** `kind` is "build" or "check" -- devtwin_check reuses this for test commands. */
+function refusedIssue(
+  directory: string,
+  refused: CommandOutcome[],
+  kind = 'build',
+): Record<string, unknown> {
+  return {
+    severity: 'medium',
+    code: `${kind}.commands_refused`,
+    title: `${kind.charAt(0).toUpperCase()}${kind.slice(1)} command(s) in '${directory}' were not executed`,
+    message: `These commands are not in DevTwin's allowlist, so the ${kind} did not run.`,
+    evidence: refused.map((r) => r.command),
+    recommendation: 'Run them yourself; DevTwin cannot report a pass or a failure for them.',
+  };
+}
+
+/**
+ * A command stopped at the timeout is neither a pass nor a failure. When the
+ * timeout was clamped by platformTimeoutBudgetSeconds the cause is DevTwin's
+ * own budget, not the project, and the issue says so.
+ */
+function timedOutIssue(
+  directory: string,
+  timedOut: CommandOutcome[],
+  kind: string,
+  effectiveTimeoutSeconds: number,
+  clamped: boolean,
+): Record<string, unknown> {
+  return {
+    severity: 'medium',
+    code: `${kind}.commands_timed_out`,
+    title: `${kind.charAt(0).toUpperCase()}${kind.slice(1)} command(s) in '${directory}' did not finish in time`,
+    message: clamped
+      ? `Stopped after ${effectiveTimeoutSeconds}s: the configured ${kind} timeout was clamped to ` +
+        'platformTimeoutBudgetSeconds. This is not a failure -- the command was still running.'
+      : `Stopped after ${effectiveTimeoutSeconds}s. This is not a failure -- the command was ` +
+        'still running when DevTwin stopped it.',
+    evidence: timedOut.map((r) => r.command),
+    recommendation: clamped
+      ? 'Raise platformTimeoutBudgetSeconds, or run the command yourself for a real result.'
+      : `Raise ${kind}TimeoutSeconds, or run the command yourself for a real result.`,
+  };
 }
 
 /** Minimal shape of the per-call context the platform hands to a tool. */
@@ -159,10 +326,11 @@ export class DevTwinManager extends EventEmitter {
 
   /** devtwin_health_check -- deep check: can we actually shell out and read a workspace? */
   async deepHealthCheck(_context?: CallContext): Promise<ToolResult> {
-    const workspace = this.config.defaultWorkspace;
+    // Probe the same path a tool call with no `workspace` argument would get,
+    // rather than re-resolving defaultWorkspace by hand here.
     let workspaceReadable = false;
     try {
-      workspaceReadable = pathExists(resolve(expandUser(workspace)));
+      workspaceReadable = pathExists(this.resolveWorkspace(''));
     } catch {
       workspaceReadable = false;
     }
@@ -213,13 +381,13 @@ export class DevTwinManager extends EventEmitter {
 
   /** devtwin_detect */
   async detect(workspace: string): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
-    const ws = await inspectWorkspace(workspace);
-    if (!ws.exists) return this.missingWorkspace(workspace);
+    const ws = await inspectWorkspace(path);
+    if (!ws.exists) return this.missingWorkspace(path);
 
-    const profile = detectProject(workspace);
+    const profile = detectProject(path);
     const status = profile.ecosystems.length > 0 ? Status.OK : Status.UNKNOWN;
     const summary =
       profile.ecosystems.length > 0
@@ -237,11 +405,11 @@ export class DevTwinManager extends EventEmitter {
 
   /** devtwin_health */
   async health(workspace: string): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
-    this.applyEnvScope(workspace);
-    const report = await computeHealth(workspace);
+    this.applyEnvScope(path);
+    const report = await computeHealth(path);
     return this.record('devtwin_health', {
       status: report.status,
       summary: `health_score=${report.health_score} (${report.status}) -- ${report.project_summary}`,
@@ -259,11 +427,11 @@ export class DevTwinManager extends EventEmitter {
 
   /** devtwin_drift */
   async drift(workspace: string): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
-    this.applyEnvScope(workspace);
-    const report = await computeDrift(workspace);
+    this.applyEnvScope(path);
+    const report = await computeDrift(path);
     return this.record('devtwin_drift', {
       status: report.has_drift ? Status.WARNING : Status.OK,
       summary: report.summary,
@@ -281,11 +449,11 @@ export class DevTwinManager extends EventEmitter {
     errorMessage: string,
     command?: string | null,
   ): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
-    this.applyEnvScope(workspace);
-    const report = await diagnoseFailure(workspace, errorMessage, command ?? null);
+    this.applyEnvScope(path);
+    const report = await diagnoseFailure(path, errorMessage, command ?? null);
     return this.record('devtwin_explain_failure', {
       status: Status.OK,
       summary: report.summary,
@@ -299,14 +467,14 @@ export class DevTwinManager extends EventEmitter {
 
   /** devtwin_project_info */
   async projectInfo(workspace: string): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
-    const ws = await inspectWorkspace(workspace);
-    if (!ws.exists) return this.missingWorkspace(workspace);
+    const ws = await inspectWorkspace(path);
+    if (!ws.exists) return this.missingWorkspace(path);
 
-    const path = this.applyEnvScope(workspace);
-    const profile = detectProject(workspace);
+    this.applyEnvScope(path);
+    const profile = detectProject(path);
     const adapters = await runAdapters(path);
     const osInfo = getOsInfo();
 
@@ -327,13 +495,13 @@ export class DevTwinManager extends EventEmitter {
 
   /** devtwin_dependencies */
   async dependencies(workspace: string): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
-    const ws = await inspectWorkspace(workspace);
-    if (!ws.exists) return this.missingWorkspace(workspace);
+    const ws = await inspectWorkspace(path);
+    if (!ws.exists) return this.missingWorkspace(path);
 
-    const path = this.applyEnvScope(workspace);
+    this.applyEnvScope(path);
     const adapters = await runAdapters(path);
     const deps = adapters.map((a) => a.dependencies).filter((d) => d !== null);
 
@@ -351,13 +519,13 @@ export class DevTwinManager extends EventEmitter {
 
   /** devtwin_services */
   async services(workspace: string): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
-    const ws = await inspectWorkspace(workspace);
-    if (!ws.exists) return this.missingWorkspace(workspace);
+    const ws = await inspectWorkspace(path);
+    if (!ws.exists) return this.missingWorkspace(path);
 
-    const path = this.applyEnvScope(workspace);
+    this.applyEnvScope(path);
     const adapters = await runAdapters(path);
     const services = await detectServices(path, this.dependencyNames(adapters));
     const dockerInfo = await inspectDocker(path);
@@ -374,16 +542,16 @@ export class DevTwinManager extends EventEmitter {
 
   /** devtwin_check */
   async check(workspace: string, run?: string[] | null): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
     const disabled = this.guardExecution();
     if (disabled) return disabled;
 
-    const ws = await inspectWorkspace(workspace);
-    if (!ws.exists) return this.missingWorkspace(workspace);
+    const ws = await inspectWorkspace(path);
+    if (!ws.exists) return this.missingWorkspace(path);
 
-    const path = this.applyEnvScope(workspace);
+    this.applyEnvScope(path);
     const adapters = await runAdapters(path);
 
     const recognized: string[] = [];
@@ -393,86 +561,112 @@ export class DevTwinManager extends EventEmitter {
     // recognized list is the allowlist the selection is checked against.
     const candidates =
       run && run.length > 0 ? recognized : recognized.slice(0, this.config.maxAutoCheckCommands);
+    // Commands dropped by the cap were recognized but never attempted; saying so
+    // is the difference between "your checks pass" and "5 of your 8 checks pass".
+    const skipped = recognized.filter((c) => !candidates.includes(c));
 
-    const { results, rejected } = await this.runRecognizedCommands(
-      path,
-      candidates,
-      this.config.checkTimeoutSeconds,
-      run,
-    );
+    const { results, rejected, timeoutClamped, effectiveTimeoutSeconds } =
+      await this.runRecognizedCommands(path, candidates, this.config.checkTimeoutSeconds, run);
 
-    const failed = results.filter((r) => r.executed && !r.passed);
-    const status =
-      failed.length > 0 ? Status.ERROR : results.length > 0 ? Status.OK : Status.UNKNOWN;
+    const partition = partitionResults(results);
+    const status = executionStatus(results, rejected, skipped);
 
     return this.record('devtwin_check', {
       status,
-      summary:
-        results.length > 0
-          ? `Ran ${results.length} check(s), ${failed.length} failed.`
-          : 'No recognized check commands were found for this project.',
-      data: { recognized_commands: recognized, results, rejected },
-      issues: [],
+      summary: executionSummary('check', results, recognized, rejected, skipped),
+      data: {
+        recognized_commands: recognized,
+        results,
+        rejected,
+        skipped_commands: skipped,
+        max_check_commands: this.config.maxAutoCheckCommands,
+        ...this.outcomeCounts(partition, timeoutClamped, effectiveTimeoutSeconds),
+      },
+      issues: this.outcomeIssues(
+        ROOT_DIR_LABEL,
+        partition,
+        'check',
+        effectiveTimeoutSeconds,
+        timeoutClamped,
+      ),
       recommendations: [],
     });
   }
 
   /** devtwin_build */
   async build(workspace: string, run?: string[] | null): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
     const disabled = this.guardExecution();
     if (disabled) return disabled;
 
-    const ws = await inspectWorkspace(workspace);
-    if (!ws.exists) return this.missingWorkspace(workspace);
+    const ws = await inspectWorkspace(path);
+    if (!ws.exists) return this.missingWorkspace(path);
 
-    const path = this.applyEnvScope(workspace);
+    this.applyEnvScope(path);
     const adapters = await runAdapters(path);
 
     const recognized: string[] = [];
     for (const a of adapters) recognized.push(...a.build_commands);
 
-    const { results, rejected } = await this.runRecognizedCommands(
-      path,
-      recognized,
-      this.config.buildTimeoutSeconds,
-      run,
-    );
+    // The same per-call ceiling devtwin_check and devtwin_build_all enforce: at
+    // buildTimeoutSeconds each, an uncapped list can hold a single tool call
+    // open far longer than any client will wait.
+    const candidates =
+      run && run.length > 0 ? recognized : recognized.slice(0, this.config.maxAutoBuildCommands);
+    const skipped = recognized.filter((c) => !candidates.includes(c));
 
-    const failed = results.filter((r) => r.executed && !r.passed);
-    const status =
-      failed.length > 0 ? Status.ERROR : results.length > 0 ? Status.OK : Status.UNKNOWN;
+    const { results, rejected, timeoutClamped, effectiveTimeoutSeconds } =
+      await this.runRecognizedCommands(path, candidates, this.config.buildTimeoutSeconds, run);
+
+    const partition = partitionResults(results);
+    const status = executionStatus(results, rejected, skipped);
 
     return this.record('devtwin_build', {
       status,
-      summary:
-        results.length > 0
-          ? `Ran ${results.length} build(s), ${failed.length} failed.`
-          : 'No recognized build commands were found for this project.',
-      data: { recognized_commands: recognized, results, rejected },
-      issues: [],
-      recommendations: [],
+      summary: executionSummary('build', results, recognized, rejected, skipped),
+      data: {
+        recognized_commands: recognized,
+        results,
+        rejected,
+        skipped_commands: skipped,
+        max_build_commands: this.config.maxAutoBuildCommands,
+        ...this.outcomeCounts(partition, timeoutClamped, effectiveTimeoutSeconds),
+      },
+      issues: this.outcomeIssues(
+        path,
+        partition,
+        'build',
+        effectiveTimeoutSeconds,
+        timeoutClamped,
+      ),
+      recommendations:
+        skipped.length > 0
+          ? [
+              `${skipped.length} recognized build command(s) were not attempted because of the ` +
+                `${this.config.maxAutoBuildCommands}-build cap; name them explicitly with \`run\` to build them.`,
+            ]
+          : [],
     });
   }
 
   /** devtwin_build_all */
   async buildAll(workspace: string): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path: root, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
     const disabled = this.guardExecution();
     if (disabled) return disabled;
 
-    const root = this.applyEnvScope(workspace);
-    if (!pathExists(root)) return this.missingWorkspace(workspace);
+    this.applyEnvScope(root);
+    if (!pathExists(root)) return this.missingWorkspace(root);
 
     const targets = this.monorepoTargets(root);
     if (targets.length === 0) {
       return this.record('devtwin_build_all', {
         status: Status.UNKNOWN,
-        summary: 'No recognized ecosystems found in subdirectories.',
+        summary: 'No recognized ecosystems found in the workspace root or its subdirectories.',
         data: { ecosystems: [] },
         issues: [],
         recommendations: [],
@@ -480,23 +674,43 @@ export class DevTwinManager extends EventEmitter {
     }
 
     const results: Array<Record<string, unknown>> = [];
+    const issues: Array<Record<string, unknown>> = [];
+    const summaryParts: string[] = [];
+    const skippedCommands: string[] = [];
+    let budget = this.config.maxAutoBuildCommands;
+
     for (const target of targets) {
       const adapters = await runAdapters(target.path);
       const buildCommands: string[] = [];
       for (const a of adapters) buildCommands.push(...a.build_commands);
 
-      const { results: buildResults } = await this.runRecognizedCommands(
-        target.path,
-        buildCommands,
-        this.config.buildTimeoutSeconds,
+      // Spend the shared command budget in scan order; anything past it is
+      // reported as skipped rather than silently dropped.
+      const toRun = buildCommands.slice(0, Math.max(budget, 0));
+      const skipped = buildCommands.slice(toRun.length);
+      skippedCommands.push(...skipped);
+
+      const { results: buildResults, timeoutClamped, effectiveTimeoutSeconds } =
+        await this.runRecognizedCommands(target.path, toRun, this.config.buildTimeoutSeconds);
+
+      const partition = partitionResults(buildResults);
+      const executed = executedCount(partition);
+      // The budget exists to bound wall-clock time, so only builds that
+      // actually ran spend it. Charging for a command the allowlist refused
+      // would exhaust the budget on zero work and report the real builds
+      // further down the scan as "skipped".
+      budget -= executed;
+
+      const buildStatus = executionStatus(buildResults, [], skipped);
+      issues.push(
+        ...this.outcomeIssues(
+          target.name,
+          partition,
+          'build',
+          effectiveTimeoutSeconds,
+          timeoutClamped,
+        ),
       );
-      const failedBuilds = buildResults.filter((r) => r.executed && !r.passed);
-      const buildStatus =
-        failedBuilds.length > 0
-          ? Status.ERROR
-          : buildResults.length > 0
-            ? Status.OK
-            : Status.UNKNOWN;
 
       results.push({
         directory: target.name,
@@ -504,44 +718,70 @@ export class DevTwinManager extends EventEmitter {
         status: buildStatus,
         build_commands: buildCommands,
         build_results: buildResults,
-        passed_count: buildResults.filter((r) => r.passed).length,
-        failed_count: failedBuilds.length,
+        skipped_commands: skipped,
+        ...this.outcomeCounts(partition, timeoutClamped, effectiveTimeoutSeconds),
       });
+
+      let part = `${target.name} (${partition.passed.length}/${executed} passed`;
+      if (partition.timedOut.length > 0) part += `, ${partition.timedOut.length} timed out`;
+      if (partition.refused.length > 0) part += `, ${partition.refused.length} refused`;
+      if (partition.unavailable.length > 0) {
+        part += `, ${partition.unavailable.length} tool not installed`;
+      }
+      if (skipped.length > 0) part += `, ${skipped.length} skipped`;
+      summaryParts.push(`${part})`);
     }
 
-    const status = results.some((r) => r['status'] === Status.ERROR) ? Status.ERROR : Status.OK;
-    const summary =
-      `Built ${results.length} ecosystem(s): ` +
-      results
-        .map((r) => {
-          const passed = Number(r['passed_count'] ?? 0);
-          const failed = Number(r['failed_count'] ?? 0);
-          return `${String(r['directory'])} (${passed}/${passed + failed})`;
-        })
-        .join(', ');
+    // Aggregate: ERROR if any directory failed, WARNING if any command was
+    // refused, timed out or skipped, OK only if something actually built,
+    // else UNKNOWN -- "Built 1 ecosystem(s): backend (0/0)" is not an `ok`.
+    const statuses = new Set(results.map((r) => r['status']));
+    let status: Status;
+    if (statuses.has(Status.ERROR)) status = Status.ERROR;
+    else if (statuses.has(Status.WARNING) || skippedCommands.length > 0) status = Status.WARNING;
+    else if (statuses.has(Status.OK)) status = Status.OK;
+    else status = Status.UNKNOWN;
+
+    let summary = `Built ${results.length} ecosystem(s): ${summaryParts.join(', ')}`;
+    if (skippedCommands.length > 0) {
+      summary +=
+        `. ${skippedCommands.length} command(s) skipped: ` +
+        `at most ${this.config.maxAutoBuildCommands} builds run per call.`;
+    }
 
     return this.record('devtwin_build_all', {
       status,
       summary,
-      data: { ecosystems: results },
-      issues: [],
-      recommendations: [],
+      data: {
+        ecosystems: results,
+        max_build_commands: this.config.maxAutoBuildCommands,
+        skipped_commands: skippedCommands,
+      },
+      issues,
+      recommendations:
+        skippedCommands.length > 0
+          ? [
+              `${skippedCommands.length} build command(s) were not run because of the ` +
+                `${this.config.maxAutoBuildCommands}-build cap; build those directories ` +
+                'individually with devtwin_build.',
+            ]
+          : [],
     });
   }
 
   /** devtwin_health_all */
   async healthAll(workspace: string): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path: root, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
-    const root = this.applyEnvScope(workspace);
-    if (!pathExists(root)) return this.missingWorkspace(workspace);
+    this.applyEnvScope(root);
+    if (!pathExists(root)) return this.missingWorkspace(root);
 
     const targets = this.monorepoTargets(root);
     if (targets.length === 0) {
       return this.record('devtwin_health_all', {
         status: Status.UNKNOWN,
-        summary: 'No recognized ecosystems found in subdirectories.',
+        summary: 'No recognized ecosystems found in the workspace root or its subdirectories.',
         data: { ecosystems: [] },
         issues: [],
         recommendations: [],
@@ -596,15 +836,15 @@ export class DevTwinManager extends EventEmitter {
 
   /** devtwin_prepare -- plans only, never executes. */
   async prepare(workspace: string): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
-    const ws = await inspectWorkspace(workspace);
-    if (!ws.exists) return this.missingWorkspace(workspace);
+    const ws = await inspectWorkspace(path);
+    if (!ws.exists) return this.missingWorkspace(path);
 
-    const path = this.applyEnvScope(workspace);
-    const health = await computeHealth(workspace);
-    const drift = await computeDrift(workspace);
+    this.applyEnvScope(path);
+    const health = await computeHealth(path);
+    const drift = await computeDrift(path);
     const adapters = await runAdapters(path);
     const services = await detectServices(path, this.dependencyNames(adapters));
 
@@ -688,15 +928,15 @@ export class DevTwinManager extends EventEmitter {
 
   /** devtwin_precommit -- read-only commit-readiness summary. */
   async precommit(workspace: string): Promise<ToolResult> {
-    const guard = this.guardWorkspace(workspace);
-    if (guard) return guard;
+    const { path, denied } = this.openWorkspace(workspace);
+    if (denied) return denied;
 
-    const ws = await inspectWorkspace(workspace);
-    if (!ws.exists) return this.missingWorkspace(workspace);
+    const ws = await inspectWorkspace(path);
+    if (!ws.exists) return this.missingWorkspace(path);
 
-    const path = this.applyEnvScope(workspace);
+    this.applyEnvScope(path);
     const git = await inspectGit(path);
-    const health = await computeHealth(workspace);
+    const health = await computeHealth(path);
 
     if (!git.is_repo) {
       return this.record('devtwin_precommit', {
@@ -765,17 +1005,33 @@ export class DevTwinManager extends EventEmitter {
   // ---------------------------------------------------------------- helpers
 
   /**
+   * Everything a workspace-scoped tool needs before it touches the disk: the
+   * single absolute path the whole call operates on, plus the refusal that
+   * stops the call when that path is outside the allowlist.
+   *
+   * Resolving exactly once is the point. While the guard resolved the
+   * argument but the inspection re-resolved the caller's RAW string further
+   * down, an omitted workspace was checked as `defaultWorkspace` -- and
+   * approved -- then read as `process.cwd()`, a directory the allowlist never
+   * approved. Every method below takes `path` from here and passes that same
+   * value to the guard, the env scope, the core functions and the adapters.
+   */
+  private openWorkspace(workspace: string): { path: string; denied: ToolResult | null } {
+    const path = this.resolveWorkspace(workspace);
+    return { path, denied: this.guardWorkspace(path) };
+  }
+
+  /**
    * Point the environment checks at this workspace before any adapter or
    * service detector runs. Without this they would fall back to an empty
-   * project environment.
+   * project environment. Takes the already-resolved path, so it can never
+   * scope the environment to a different directory than the one inspected.
    */
-  private applyEnvScope(workspace: string): string {
-    const path = this.resolveWorkspace(workspace);
+  private applyEnvScope(path: string): void {
     configureEnvSource({
       allowHostEnv: this.config.allowHostEnvironment,
       workspace: path,
     });
-    return path;
   }
 
   private dependencyNames(adapters: AdapterResult[]): Set<string> {
@@ -786,19 +1042,81 @@ export class DevTwinManager extends EventEmitter {
     return names;
   }
 
+  /**
+   * Directories the monorepo scans should visit: the workspace root itself
+   * (labelled `.`) first, then each configured subdirectory. Without the root,
+   * a single-package repository reported "no recognized ecosystems" for a
+   * project sitting right there. Resolved paths are de-duplicated so a
+   * symlinked subdirectory is never scanned -- or built -- twice.
+   */
   private monorepoTargets(
     root: string,
   ): Array<{ name: string; path: string; ecosystems: string[] }> {
+    const candidates: Array<[string, string]> = [
+      [ROOT_DIR_LABEL, root],
+      ...this.config.monorepoDirectories.map(
+        (subdir): [string, string] => [subdir, join(root, subdir)],
+      ),
+    ];
+
     const targets: Array<{ name: string; path: string; ecosystems: string[] }> = [];
-    for (const subdir of this.config.monorepoDirectories) {
-      const path = join(root, subdir);
+    const seen = new Set<string>();
+    for (const [name, path] of candidates) {
       if (!isDirectory(path)) continue;
-      const profile = detectProject(path);
+      const resolved = realPath(path);
+      if (seen.has(resolved)) continue;
+      seen.add(resolved);
+      const profile = detectProject(resolved);
       if (profile.ecosystems.length > 0) {
-        targets.push({ name: subdir, path, ecosystems: profile.ecosystems });
+        targets.push({ name, path: resolved, ecosystems: profile.ecosystems });
       }
     }
     return targets;
+  }
+
+  /** Wire-shape counts for a set of command outcomes, shared by every executing tool. */
+  private outcomeCounts(
+    partition: OutcomePartition,
+    timeoutClamped: boolean,
+    effectiveTimeoutSeconds: number,
+  ): Record<string, unknown> {
+    return {
+      executed_count: executedCount(partition),
+      passed_count: partition.passed.length,
+      failed_count: partition.failed.length,
+      refused_count: partition.refused.length,
+      refused_commands: partition.refused.map((r) => r.command),
+      unavailable_count: partition.unavailable.length,
+      timed_out_count: partition.timedOut.length,
+      timeout_clamped: timeoutClamped,
+      effective_timeout_seconds: effectiveTimeoutSeconds,
+    };
+  }
+
+  /** Issues for the outcomes that never produced a pass or a failure. */
+  private outcomeIssues(
+    directory: string,
+    partition: OutcomePartition,
+    kind: string,
+    effectiveTimeoutSeconds: number,
+    timeoutClamped: boolean,
+  ): Array<Record<string, unknown>> {
+    const issues: Array<Record<string, unknown>> = [];
+    if (partition.refused.length > 0) {
+      issues.push(refusedIssue(directory, partition.refused, kind));
+    }
+    if (partition.timedOut.length > 0) {
+      issues.push(
+        timedOutIssue(
+          directory,
+          partition.timedOut,
+          kind,
+          effectiveTimeoutSeconds,
+          timeoutClamped,
+        ),
+      );
+    }
+    return issues;
   }
 
   /**
@@ -814,7 +1132,12 @@ export class DevTwinManager extends EventEmitter {
     candidates: string[],
     timeoutSeconds: number,
     run?: string[] | null,
-  ): Promise<{ results: CommandOutcome[]; rejected: string[] }> {
+  ): Promise<{
+    results: CommandOutcome[];
+    rejected: string[];
+    timeoutClamped: boolean;
+    effectiveTimeoutSeconds: number;
+  }> {
     let toRun: string[];
     let rejected: string[] = [];
 
@@ -851,7 +1174,7 @@ export class DevTwinManager extends EventEmitter {
       });
     }
 
-    return { results, rejected };
+    return { results, rejected, timeoutClamped: clamped, effectiveTimeoutSeconds: effectiveTimeout };
   }
 
   /** Keep a single command's captured output inside the configured ceiling. */
@@ -865,9 +1188,18 @@ export class DevTwinManager extends EventEmitter {
     };
   }
 
-  /** Expand `~`, resolve to absolute -- the Path(...).expanduser().resolve() equivalent. */
+  /**
+   * Expand `~`, resolve to absolute, follow symlinks -- the
+   * Path(...).expanduser().resolve() equivalent.
+   *
+   * A falsy `workspace` means the caller omitted the argument, which is what
+   * makes `defaultWorkspace` reachable. Symlinks are followed here rather
+   * than only inside `guardWorkspace`, so the path the guard approves is
+   * byte-for-byte the path everything downstream reads, and `workspace.root`
+   * (which realpaths) can never disagree with `profile.root` (which does not).
+   */
   private resolveWorkspace(workspace: string): string {
-    return resolve(expandUser(workspace || this.config.defaultWorkspace));
+    return realPath(resolve(expandUser(workspace || this.config.defaultWorkspace)));
   }
 
   private workspaceAllowlist(): string[] {
@@ -883,19 +1215,21 @@ export class DevTwinManager extends EventEmitter {
    * restriction; when set, the path must be inside one of the roots. Both
    * sides are resolved through symlinks first, so neither `../` nor a symlink
    * planted inside an allowed root can point out of it.
+   *
+   * Takes the path `resolveWorkspace` already produced -- never a raw
+   * argument -- so the directory approved here is the directory inspected.
    */
-  private guardWorkspace(workspace: string): ToolResult | null {
+  private guardWorkspace(path: string): ToolResult | null {
     const roots = this.workspaceAllowlist().map((root) => realPath(root));
     if (roots.length === 0) return null;
 
-    const target = realPath(this.resolveWorkspace(workspace));
-    const allowed = roots.some((root) => target === root || target.startsWith(root + sep));
+    const allowed = roots.some((root) => path === root || path.startsWith(root + sep));
     if (allowed) return null;
 
     return {
       status: Status.ERROR,
       summary: 'Workspace is outside the configured allowedWorkspaceRoots.',
-      data: { workspace, allowed: false },
+      data: { workspace: path, allowed: false },
       issues: [],
       recommendations: ['Ask an administrator to add this path to allowedWorkspaceRoots.'],
     };
@@ -912,10 +1246,11 @@ export class DevTwinManager extends EventEmitter {
     };
   }
 
-  private missingWorkspace(workspace: string): ToolResult {
+  /** `path` is the resolved workspace, so the message names the directory actually looked for. */
+  private missingWorkspace(path: string): ToolResult {
     return {
       status: Status.ERROR,
-      summary: `Workspace '${workspace}' does not exist.`,
+      summary: `Workspace '${path}' does not exist.`,
       data: {},
       issues: [],
       recommendations: [],

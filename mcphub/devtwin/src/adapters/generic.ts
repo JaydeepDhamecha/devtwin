@@ -10,7 +10,13 @@
 
 import { join } from 'node:path';
 
-import { Presence, type DependencyInfo } from '../core/models.js';
+import {
+  Presence,
+  Severity,
+  type DependencyInfo,
+  type HealthIssue,
+  type RuntimeInfo,
+} from '../core/models.js';
 import { existsAny, listTopLevel, pathExists, readTextFile } from '../system/filesystem.js';
 import { findComposeFiles } from '../system/docker.js';
 import { EcosystemAdapter } from './base.js';
@@ -69,6 +75,15 @@ export class GenericAdapter extends EcosystemAdapter {
     return commands;
   }
 
+  /**
+   * Build commands `devtwin_build`/`devtwin_build_all` are allowed to execute.
+   *
+   * Container commands are deliberately absent: `docker build .` is a real
+   * image build (killed half-done at the build timeout, leaving a partial
+   * build behind in the shared image store) and `docker compose up` starts
+   * containers. Neither is a read-only build check, so they are surfaced as
+   * advice by `healthChecks()` -- which nothing ever executes -- instead.
+   */
   override async inspectBuildCommands(root: string): Promise<string[]> {
     const commands: string[] = [];
     const makefile = join(root, 'Makefile');
@@ -78,14 +93,41 @@ export class GenericAdapter extends EcosystemAdapter {
         commands.push('make build');
       }
     }
+    return commands;
+  }
+
+  /** Surface container commands as advice, never as something DevTwin runs. */
+  override async healthChecks(root: string, _runtimes: RuntimeInfo[]): Promise<HealthIssue[]> {
+    const issues: HealthIssue[] = [];
     if (pathExists(join(root, 'Dockerfile'))) {
-      commands.push('docker build .');
+      issues.push({
+        severity: Severity.INFO,
+        code: 'generic.docker_image_build_available',
+        title: 'Dockerfile present -- image build is not run automatically',
+        message:
+          'DevTwin does not run `docker build .` as a build check: building an image is ' +
+          'slow, writes to the local image store, and would be killed mid-way by the ' +
+          'build timeout.',
+        evidence: ['Dockerfile'],
+        recommendation: 'Run `docker build .` yourself when you need the image.',
+        confidence: null,
+      });
     }
     const compose = findComposeFiles(root);
     if (compose.length > 0) {
-      commands.push(`docker compose -f ${compose[0]!} up`);
+      issues.push({
+        severity: Severity.INFO,
+        code: 'generic.compose_services_available',
+        title: 'Compose file present -- containers are not started automatically',
+        message:
+          'DevTwin never starts containers. Use devtwin_services to see which services ' +
+          'this project expects and whether they are already running.',
+        evidence: [...compose],
+        recommendation: `Run \`docker compose -f ${compose[0]!} up -d\` yourself if needed.`,
+        confidence: null,
+      });
     }
-    return commands;
+    return issues;
   }
 
   notes(root: string): string[] {
