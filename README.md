@@ -47,7 +47,7 @@ or "Why does `npm test` fail?"
 **DevTwin solves it:**
 - **No secrets ever leak** — environment checks report presence only, values never read
 - **One call, one answer** — `dev_health()` bundles 10+ checks into structured JSON
-- **Safety by design** — only allowlisted, read-only operations
+- **Safety by design** — only allowlisted operations; the three tools that run anything run only commands DevTwin recognized itself
 - **Same check every time** — exact same detection logic across all projects
 
 **Token efficiency:** ~800 tokens (one call + schema) vs. ~1500–2000 tokens (5–6 bash commands + parsing).
@@ -131,7 +131,7 @@ steps?"** Conceptually, yes -- plenty of mature repos already hand-write
 one. DevTwin's difference is that most repos *don't* have one, writing a
 good one per-ecosystem is real work, its output is structured JSON an
 agent can reason over rather than plain text a human reads, and the same
-10 tools work identically across every repo instead of a bespoke script
+13 tools work identically across every repo instead of a bespoke script
 per project with its own conventions and blind spots.
 
 **"Does this only work with Claude / Claude Code?"** No. DevTwin speaks
@@ -147,19 +147,20 @@ any new dev-tooling dependency.
 **"Could it suggest something wrong, or run a bad recommendation
 automatically?"** No tool here executes a `recommendations` string --
 those are just text for the agent (or you) to read and decide on.
-`dev_check` is the only tool that executes anything, and only commands it
-recognized itself against a fixed allowlist -- see
-[Security model](#security-model).
+`dev_check`, `dev_build` and `dev_build_all` are the only tools that execute
+anything, and only commands they recognized themselves against a fixed
+allowlist -- see [Security model](#security-model).
 
 **"Does it phone home or send telemetry anywhere?"** No. Zero network
 calls of its own -- see [Local-first architecture](#local-first-architecture).
 
 **"I don't want an MCP server running *any* commands on my machine."**
-9 of the 10 tools are pure read-only (file reads, version checks). Only
-`dev_check` executes anything, and only commands DevTwin itself
-recognized from project files, checked against an allowlist, with
-`shell=False` and a timeout -- see [Security model](#security-model) for
-exactly what that does and doesn't allow.
+10 of the 13 tools are read-only (file reads, version checks). Only
+`dev_check`, `dev_build` and `dev_build_all` execute project commands, and only
+commands DevTwin itself recognized from project files, checked against an
+allowlist, with `shell=False` and a timeout -- see
+[Security model](#security-model) for exactly what that does and doesn't
+allow.
 
 ## Benefits
 
@@ -194,7 +195,7 @@ using the standard ~4-characters-per-token approximation.
 
 | When | What happens | Cost |
 |---|---|---|
-| **The moment the client connects** to DevTwin | All 10 tool schemas (name, description, parameters) are added to *every request* in that session -- whether or not any tool is ever called. This is true of any MCP server, not specific to DevTwin. | **≈1,400 tokens, every single turn** |
+| **The moment the client connects** to DevTwin | All 13 tool schemas (name, description, parameters) are added to *every request* in that session -- whether or not any tool is ever called. This is true of any MCP server, not specific to DevTwin. | **≈1,900 tokens, every single turn** |
 | **Only when a tool is actually called** | That one tool's JSON response is added to context, once. | **~120-200 tokens per call** (varies with how many issues are found) |
 
 Per-tool schema breakdown (measured):
@@ -203,19 +204,22 @@ Per-tool schema breakdown (measured):
 |---|---|---|
 | `dev_detect` | 440 chars | ~110 |
 | `dev_health` | 500 chars | ~125 |
+| `dev_health_all` | 593 chars | ~148 |
 | `dev_drift` | 470 chars | ~117 |
 | `dev_explain_failure` | 793 chars | ~198 |
 | `dev_project_info` | 523 chars | ~130 |
 | `dev_dependencies` | 507 chars | ~126 |
 | `dev_services` | 507 chars | ~126 |
 | `dev_check` | 771 chars | ~192 |
+| `dev_build` | 792 chars | ~198 |
+| `dev_build_all` | 604 chars | ~151 |
 | `dev_prepare` | 645 chars | ~161 |
 | `dev_precommit` | 481 chars | ~120 |
-| **Total (all 10 tools)** | **5,637 chars** | **≈1,400** |
+| **Total (all 13 tools)** | **7,626 chars** | **≈1,900** |
 
 **The honest bottom line:** for a *single* one-off diagnosis in a session
 that otherwise never touches an environment question, raw Bash can come
-out cheaper in total tokens -- the ~1,400-token fixed schema tax often
+out cheaper in total tokens -- the ~1,900-token fixed schema tax often
 outweighs the savings from replacing several shell commands with one call.
 See the worked comparison below for real numbers on both sides.
 
@@ -292,7 +296,7 @@ dev_health()
 }
 ```
 
-Same conclusion, ~150 tokens for the response -- plus the ~1,400-token
+Same conclusion, ~150 tokens for the response -- plus the ~1,900-token
 fixed schema tax already paid that turn regardless (see
 [Token cost](#token-cost)). One call instead of six, no possibility of
 leaking a secret, and the exact same curated check every time instead of
@@ -325,7 +329,7 @@ DevTwin checks to answer it, and the test/build command it recognizes for
 | Go | "Is my Go version correct for this repo?" | `go` vs. the version required in `go.mod` | `go test ./...`, `go build ./...` |
 | Rust | "Why does `cargo build` fail?" | `rustc` vs. `rust-toolchain[.toml]` channel | `cargo test` |
 | .NET | "Why does `dotnet build` fail?" | `dotnet` SDK presence and version | `dotnet test` |
-| Swift (iOS/macOS) | "Why does my iOS build fail?" | `swift`/`xcodebuild` vs. `Package.swift` tools-version; CocoaPods/SPM lockfile state | `swift test` (SPM projects only) |
+| Swift (iOS/macOS) | "Why does my iOS build fail?" | `swift`/`xcodebuild` vs. `Package.swift` tools-version; CocoaPods/SPM lockfile state | `swift test` (SPM); `xcodebuild test` (macOS Xcode projects) |
 | Ruby | "Why does `bundle exec rspec` fail?" | `ruby` vs. `.ruby-version`; Bundler + `Gemfile.lock` | `bundle exec rspec`, `bundle exec rake test` |
 | PHP | "Why does my PHP app fail to boot?" | `php` vs. `composer.json`'s `require.php`; Composer + `composer.lock` | `composer test`, `vendor/bin/phpunit` |
 | Generic (fallback) | "This repo isn't in any language above -- what can you tell me?" | `Makefile`/`Taskfile.yml`/`justfile`/`Dockerfile`/compose services | `make test`, `task test`, `just test` |
@@ -555,9 +559,9 @@ Each ecosystem report includes:
 ## Security model
 
 - **No arbitrary command execution.** There is no `execute_shell` tool.
-  `dev_check` only runs commands DevTwin itself recognized from project
-  files, checked against an allowlist, run with `shell=False` and a
-  timeout.
+  `dev_check`, `dev_build` and `dev_build_all` only run commands DevTwin
+  itself recognized from project files, checked against an allowlist, run
+  with `shell=False` and a timeout.
 - **No destructive actions, ever.** DevTwin never runs `git reset --hard`,
   `rm -rf`, `kill -9`, `docker compose down`, lockfile deletion, or
   `.env` mutation.
@@ -582,6 +586,11 @@ Full details: [`docs/security.md`](docs/security.md).
   local commands it inspects (`git`, `docker`, language toolchains).
 - Everything it reports comes from files and processes already on the
   machine it runs on.
+- One exception worth knowing about: on an Xcode project, discovering the
+  build/test commands runs `xcodebuild -list`, which populates DerivedData and,
+  for a project with SwiftPM dependencies, may resolve packages over the
+  network. It runs at most once per adapter run and is the only read-only path
+  that is not purely a file read.
 
 ## Adoption & team setup
 

@@ -14,6 +14,7 @@ from devtwin.core.models import ActionClass, Capability
 READ_ONLY_TOOLS = {
     "dev_detect",
     "dev_health",
+    "dev_health_all",
     "dev_drift",
     "dev_explain_failure",
     "dev_project_info",
@@ -22,10 +23,10 @@ READ_ONLY_TOOLS = {
     "dev_precommit",
 }
 
-# dev_check and dev_prepare execute recognized, allowlisted commands
-# (tests/build/lint) -- "safe" in the sense of non-destructive, but not
-# purely read-only since they may leave build artifacts behind.
-SAFE_EXECUTION_TOOLS = {"dev_check"}
+# dev_check, dev_build and dev_build_all execute recognized, allowlisted
+# commands (tests/build/lint) -- "safe" in the sense of non-destructive, but
+# not purely read-only since they may leave build artifacts behind.
+SAFE_EXECUTION_TOOLS = {"dev_check", "dev_build", "dev_build_all"}
 
 # dev_prepare only plans by default; it never executes without a separate,
 # explicit human approval step outside of this MCP server's scope.

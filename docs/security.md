@@ -26,9 +26,10 @@ There is no `execute_shell`, `run_command`, or similarly generic tool.
 Every command DevTwin can run is:
 
 1. Discovered, not supplied by the model -- adapters recognize commands
-   like `pytest`, `./gradlew test`, `npm test`, `cargo test` from project
-   files; `dev_check`'s `run` parameter can only narrow that recognized
-   set, never add to it.
+   like `pytest`, `./gradlew test`, `npm test`, `cargo test`, `npm run
+   build`, `./gradlew build`, `xcodebuild build` from project files;
+   `dev_check`'s and `dev_build`'s `run` parameter can only narrow that
+   recognized set, never add to it.
 2. Checked against an executable allowlist (`security/permissions.py`)
    before it's ever passed to `subprocess.run`.
 3. Checked against a denylist of dangerous-looking arguments (`reset`,
@@ -42,8 +43,8 @@ Every DevTwin capability is classified in `security/approvals.py`:
 
 | Class | Meaning | Examples |
 |---|---|---|
-| `read_only` | Never mutates anything | `dev_detect`, `dev_health`, `dev_drift`, `dev_explain_failure`, `dev_project_info`, `dev_dependencies`, `dev_services`, `dev_precommit` |
-| `safe` | Runs recognized, non-destructive commands (may leave build artifacts) | `dev_check` |
+| `read_only` | Never mutates anything | `dev_detect`, `dev_health`, `dev_health_all`, `dev_drift`, `dev_explain_failure`, `dev_project_info`, `dev_dependencies`, `dev_services`, `dev_precommit` |
+| `safe` | Runs recognized, non-destructive commands (may leave build artifacts) | `dev_check`, `dev_build`, `dev_build_all` |
 | `requires_approval` | Would change machine state (starting a service, installing dependencies) | steps inside a `dev_prepare` plan |
 | `dangerous` | Destructive; DevTwin never executes this itself | `git reset --hard`, `rm -rf`, `docker compose down`, `kill -9`, deleting lockfiles |
 

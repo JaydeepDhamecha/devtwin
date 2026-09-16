@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 from devtwin.adapters.base import EcosystemAdapter
-from devtwin.core.models import DependencyInfo
+from devtwin.core.models import DependencyInfo, HealthIssue, RuntimeInfo, Severity
 from devtwin.system.docker import find_compose_files
 from devtwin.system.filesystem import exists_any, list_top_level
 
@@ -57,18 +57,56 @@ class GenericAdapter(EcosystemAdapter):
         return commands
 
     def inspect_build_commands(self, root: Path) -> list[str]:
+        """Build commands ``dev_build``/``dev_build_all`` are allowed to execute.
+
+        Container commands are deliberately absent: ``docker build .`` is a real
+        image build (killed half-done at the build timeout, leaving a partial
+        build behind) and ``docker compose up`` starts containers. Neither is a
+        read-only build check, so they are surfaced as advice by
+        :meth:`health_checks` -- which nothing ever executes -- instead.
+        """
         commands: list[str] = []
         makefile = root / "Makefile"
         if makefile.exists():
             targets = self._make_targets(makefile)
             if "build" in targets:
                 commands.append("make build")
+        return commands
+
+    def health_checks(self, root: Path, runtimes: list[RuntimeInfo]) -> list[HealthIssue]:
+        """Surface container commands as advice, never as something DevTwin runs."""
+        issues: list[HealthIssue] = []
         if (root / "Dockerfile").exists():
-            commands.append("docker build .")
+            issues.append(
+                HealthIssue(
+                    severity=Severity.INFO,
+                    code="generic.docker_image_build_available",
+                    title="Dockerfile present -- image build is not run automatically",
+                    message=(
+                        "DevTwin does not run `docker build .` as a build check: building an "
+                        "image is slow, writes to the local image store, and would be killed "
+                        "mid-way by the build timeout."
+                    ),
+                    evidence=["Dockerfile"],
+                    recommendation="Run `docker build .` yourself when you need the image.",
+                )
+            )
         compose = find_compose_files(root)
         if compose:
-            commands.append(f"docker compose -f {compose[0]} up")
-        return commands
+            issues.append(
+                HealthIssue(
+                    severity=Severity.INFO,
+                    code="generic.compose_services_available",
+                    title="Compose file present -- containers are not started automatically",
+                    message=(
+                        "DevTwin never starts containers. Use dev_services to see which "
+                        "services this project expects and whether they are already running."
+                    ),
+                    evidence=list(compose),
+                    recommendation=f"Run `docker compose -f {compose[0]} up -d` yourself if needed.",
+                )
+            )
+        return issues
 
     def notes(self, root: Path) -> list[str]:
         return list_top_level(root)
