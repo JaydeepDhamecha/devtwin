@@ -502,3 +502,76 @@ def test_dev_build_all_summary_distinguishes_a_timeout_from_a_failure(tmp_path: 
     result = server.dev_build_all(str(tmp_path))
     assert "timed out" in result["summary"]
     assert "failed" not in result["summary"]
+
+
+def test_repeated_run_entries_do_not_bypass_the_cap(tmp_path: Path, monkeypatch):
+    """Membership-filtering `run` against the recognized list matched every
+    repeat, so naming one command ten times ran it ten times."""
+    _node_project(tmp_path)
+    _inject_adapter(monkeypatch, build=["npm run build"])
+    invocations = _fake_passing_run(monkeypatch)
+
+    result = server.dev_build(str(tmp_path), run=["npm run build"] * 10)
+    assert len(invocations) == 1  # deduplicated, not ten builds
+    assert result["data"]["executed_count"] == 1
+
+
+def test_capped_commands_are_not_reported_as_unrecognized(tmp_path: Path, monkeypatch):
+    """A command the cap dropped still exists. Listing it in `rejected` tells the
+    caller it does not, and they stop asking for it."""
+    _node_project(tmp_path)
+    many = [f"npm run build{i}" for i in range(server.MAX_AUTO_BUILD_COMMANDS + 7)]
+    _inject_adapter(monkeypatch, build=many)
+    _fake_passing_run(monkeypatch)
+
+    result = server.dev_build(str(tmp_path), run=many)
+    assert result["data"]["rejected"] == []  # every name WAS recognized
+    assert len(result["data"]["skipped_commands"]) == 7
+    assert "unrecognized" not in result["summary"]
+
+
+def test_refused_commands_do_not_consume_the_budget_window(tmp_path: Path, monkeypatch):
+    """A refusal spawns nothing, so it must not push a real build into
+    "skipped" while the budget sits unused."""
+    _node_project(tmp_path)
+    commands = [REFUSED_BUILD] * server.MAX_AUTO_BUILD_COMMANDS + ["npm run build"]
+    _inject_adapter(monkeypatch, build=commands)
+    invocations = _fake_passing_run(monkeypatch)
+
+    result = server.dev_build(str(tmp_path))
+    assert invocations == [["npm", "run", "build"]]  # the real build still ran
+    assert result["data"]["skipped_commands"] == []
+
+
+def test_dev_build_explains_a_missing_toolchain(tmp_path: Path, monkeypatch):
+    """dev_build_all gained the explanation; dev_build and dev_check returned a
+    bare warning with an empty issues list."""
+    _node_project(tmp_path)
+    _inject_adapter(monkeypatch, build=["npm run build"], test=["npm test"])
+    _fake_unavailable_run(monkeypatch)
+
+    for tool in (server.dev_build, server.dev_check):
+        result = tool(str(tmp_path))
+        assert result["status"] == "warning"
+        assert any(i["code"] == "build.tool_not_installed" for i in result["issues"]), tool.__name__
+
+
+def test_dev_build_all_splits_unparseable_from_refused(tmp_path: Path, monkeypatch):
+    first = server.COMMON_MONOREPO_DIRS[0]
+    _node_project(tmp_path / first)
+    _inject_adapter(monkeypatch, per_dir={first: {"build": ["npm run build --name 'unbalanced"]}})
+
+    result = server.dev_build_all(str(tmp_path))
+    codes = {i["code"] for i in result["issues"]}
+    assert "build.commands_unparseable" in codes
+    assert "build.commands_refused" not in codes
+
+
+def test_dev_health_all_scans_the_workspace_root(tmp_path: Path):
+    """dev_build_all built the root while dev_health_all reported nothing found."""
+    _node_project(tmp_path)
+
+    result = server.dev_health_all(str(tmp_path))
+    labels = {e["directory"] for e in result["data"]["ecosystems"]}
+    assert server.ROOT_DIR_LABEL in labels
+    assert result["status"] != "unknown"

@@ -56,6 +56,8 @@ SECRET_FILE_PATTERNS = (
     ".pfx",
 )
 
+# Both caps are stated literally in the dev_check/dev_build docstrings, which
+# become the MCP tool descriptions -- update those too if these change.
 MAX_AUTO_CHECK_COMMANDS = 5
 # Total builds a single dev_build_all call may run. Each build gets
 # BUILD_TIMEOUT_SECONDS, so an uncapped monorepo scan can outlive any MCP
@@ -89,20 +91,77 @@ def _resolve(workspace: str) -> Path:
     return Path(workspace).expanduser().resolve()
 
 
-def _run_recognized_commands(
-    path: Path, commands: list[str], timeout: int, run: list[str] | None = None
-) -> tuple[list[dict[str, Any]], list[str], list[str]]:
-    """Run recognized commands, respecting allowlist. Returns (results, recognized, rejected)."""
-    recognized: list[str] = commands
-    if run:
-        to_run = [c for c in run if c in recognized]
-        rejected = [c for c in run if c not in recognized]
-    else:
-        to_run = recognized
-        rejected = []
+def _is_runnable(command_str: str) -> bool:
+    """Whether this command would actually spawn a process.
 
+    Pure and cheap, so selection can tell "this will cost 300 seconds" from
+    "this produces a refusal entry for free" before anything runs.
+    """
+    try:
+        args = shlex.split(command_str)
+    except ValueError:
+        return False
+    return bool(args) and is_allowed_executable(args[0]) and not is_dangerous(args)
+
+
+class Selection(NamedTuple):
+    """What a call will actually attempt, decided before anything executes."""
+
+    to_run: list[str]
+    skipped: list[str]
+    rejected: list[str]
+    budget_used: int
+
+
+def _select_commands(recognized: list[str], run: list[str] | None, budget: int) -> Selection:
+    """Decide what to execute from `recognized`, honouring an explicit `run`.
+
+    Three rules the callers all need and used to each get slightly wrong:
+
+    - `rejected` is computed against the FULL recognized list, before any cap.
+      Reporting a command the cap dropped as "unrecognized" tells the caller it
+      does not exist and they stop asking for it.
+    - A repeated name in `run` is collapsed. Membership-filtering `run` against
+      the recognized list matched every repeat, so `run=[cmd] * 10` ran ten
+      builds against a cap of five.
+    - Only commands that would really spawn a process spend the budget. A
+      refusal costs nothing, so letting one consume the window pushed real
+      builds into "skipped" while the budget sat unused.
+    """
+    if run:
+        rejected = [c for c in run if c not in recognized]
+        seen: set[str] = set()
+        selected = []
+        for candidate in run:
+            if candidate in recognized and candidate not in seen:
+                seen.add(candidate)
+                selected.append(candidate)
+    else:
+        rejected = []
+        selected = list(recognized)
+
+    to_run: list[str] = []
+    skipped: list[str] = []
+    used = 0
+    for command in selected:
+        if not _is_runnable(command):
+            to_run.append(command)  # free: yields a refusal entry, spawns nothing
+        elif used < budget:
+            to_run.append(command)
+            used += 1
+        else:
+            skipped.append(command)
+
+    return Selection(to_run, skipped, rejected, used)
+
+
+def _run_recognized_commands(
+    path: Path, commands: list[str], timeout: int
+) -> list[dict[str, Any]]:
+    """Execute an already-selected command list. Selection happens in
+    :func:`_select_commands`; this only runs what it is given."""
     results: list[dict[str, Any]] = []
-    for command_str in to_run:
+    for command_str in commands:
         try:
             args = shlex.split(command_str)
         except ValueError:
@@ -135,7 +194,7 @@ def _run_recognized_commands(
             }
         )
 
-    return results, recognized, rejected
+    return results
 
 
 class Outcomes(NamedTuple):
@@ -320,10 +379,16 @@ def _unavailable_issue(directory: str, unavailable: list[dict[str, Any]]) -> dic
     return {
         "severity": "medium",
         "code": "build.tool_not_installed",
-        "title": f"Build tool(s) for '{directory}' are not installed",
-        "message": "These commands could not start because their executable is not on PATH.",
+        "title": f"Build tool(s) for '{directory}' could not be started",
+        "message": (
+            "These commands never started: the executable was not found on PATH, or "
+            "was found but could not be run (missing execute permission)."
+        ),
         "evidence": [str(r.get("command")) for r in unavailable],
-        "recommendation": "Install the toolchain, or run dev_drift to see what this project expects.",
+        "recommendation": (
+            "Check the toolchain is installed and executable (a fresh clone often "
+            "loses +x on ./gradlew); dev_drift shows what this project expects."
+        ),
     }
 
 
@@ -502,7 +567,9 @@ def dev_check(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
     e.g. `pytest`, `./gradlew test`, `npm test`, `cargo test`. Only commands
     DevTwin itself recognized are ever executed (never an arbitrary string),
     each with a timeout. Pass `run` to restrict to a subset of the recognized
-    commands (call dev_project_info first to see what's available)."""
+    commands (call dev_project_info first to see what's available). At most
+    5 commands run per call, whether or not `run` is given; anything
+    beyond that is reported in `skipped_commands`, never silently dropped."""
     ws = inspect_workspace(workspace)
     if not ws.exists:
         return _result(Status.ERROR, f"Workspace '{workspace}' does not exist.")
@@ -515,14 +582,9 @@ def dev_check(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
 
     # The cap is a wall-clock bound, so an explicit `run` is subject to it too:
     # otherwise a caller that wants everything simply names everything.
-    selected = [c for c in run if c in recognized] if run else recognized
-    to_run_full = selected[:MAX_AUTO_CHECK_COMMANDS]
-    # Commands dropped by the cap were recognized but never attempted; saying so
-    # is the difference between "your checks pass" and "5 of your 8 checks pass".
-    skipped = [c for c in selected if c not in to_run_full]
-    results, _, rejected = _run_recognized_commands(
-        path, to_run_full, CHECK_TIMEOUT_SECONDS, run=run
-    )
+    selection = _select_commands(recognized, run, MAX_AUTO_CHECK_COMMANDS)
+    skipped, rejected = selection.skipped, selection.rejected
+    results = _run_recognized_commands(path, selection.to_run, CHECK_TIMEOUT_SECONDS)
 
     o = _partition_results(results)
     status = _execution_status(results, rejected=rejected, skipped=skipped)
@@ -550,6 +612,7 @@ def dev_check(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
                 if o.timed_out
                 else []
             )
+            + ([_unavailable_issue(str(path), o.unavailable)] if o.unavailable else [])
         ),
     )
 
@@ -725,7 +788,9 @@ def dev_build(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
     e.g. `npm run build`, `./gradlew build`, `xcodebuild build`, `dotnet build`.
     Only commands DevTwin itself recognized are ever executed (never an arbitrary string),
     each with a timeout. Pass `run` to restrict to a subset of the recognized
-    commands (call dev_project_info first to see what's available)."""
+    commands (call dev_project_info first to see what's available). At most
+    5 commands run per call, whether or not `run` is given; anything
+    beyond that is reported in `skipped_commands`, never silently dropped."""
     ws = inspect_workspace(workspace)
     if not ws.exists:
         return _result(Status.ERROR, f"Workspace '{workspace}' does not exist.")
@@ -738,12 +803,9 @@ def dev_build(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
 
     # Same per-call ceiling dev_check and dev_build_all enforce: at 300s each,
     # an uncapped list can hold a single tool call open for twenty minutes.
-    selected = [c for c in run if c in recognized] if run else recognized
-    to_run_full = selected[:MAX_AUTO_BUILD_COMMANDS]
-    skipped = [c for c in selected if c not in to_run_full]
-    results, _, rejected = _run_recognized_commands(
-        path, to_run_full, BUILD_TIMEOUT_SECONDS, run=run
-    )
+    selection = _select_commands(recognized, run, MAX_AUTO_BUILD_COMMANDS)
+    skipped, rejected = selection.skipped, selection.rejected
+    results = _run_recognized_commands(path, selection.to_run, BUILD_TIMEOUT_SECONDS)
 
     o = _partition_results(results)
     status = _execution_status(results, rejected=rejected, skipped=skipped)
@@ -771,6 +833,7 @@ def dev_build(workspace: str = ".", run: list[str] | None = None) -> dict[str, A
                 if o.timed_out
                 else []
             )
+            + ([_unavailable_issue(str(path), o.unavailable)] if o.unavailable else [])
         ),
     )
 
@@ -807,11 +870,13 @@ def dev_build_all(workspace: str = ".") -> dict[str, Any]:
             build_commands.extend(a.build_commands)
         # Spend the shared command budget in scan order; anything past it is
         # reported as skipped rather than silently dropped.
-        to_run = build_commands[:budget]
-        skipped = build_commands[len(to_run) :]
+        selection = _select_commands(build_commands, None, budget)
+        skipped = selection.skipped
         skipped_commands.extend(skipped)
 
-        build_results, _, _ = _run_recognized_commands(dir_path, to_run, BUILD_TIMEOUT_SECONDS)
+        build_results = _run_recognized_commands(
+            dir_path, selection.to_run, BUILD_TIMEOUT_SECONDS
+        )
         ob = _partition_results(build_results)
         # The budget exists to bound wall-clock time, so only builds that
         # actually ran spend it. Charging for a command the allowlist refused
@@ -819,12 +884,10 @@ def dev_build_all(workspace: str = ".") -> dict[str, Any]:
         # further down the scan as "skipped".
         budget -= ob.executed
 
-        # Finding: the per-directory status omitted `skipped`, so a directory
-        # whose first build ran clean while later ones were dropped by the
-        # shared budget reported "ok" despite its own skipped list.
+        # `skipped` counts: a directory whose first build ran clean while later
+        # ones were dropped by the shared budget is not fully "ok".
         build_status = _execution_status(build_results, skipped=skipped)
-        if ob.refused:
-            issues.append(_refused_issue(dir_name, ob.refused))
+        issues.extend(_refusal_issues(dir_name, ob.refused))
         if ob.timed_out:
             issues.append(_timed_out_issue(dir_name, ob.timed_out, BUILD_TIMEOUT_SECONDS))
         if ob.unavailable:
@@ -899,24 +962,24 @@ def dev_build_all(workspace: str = ".") -> dict[str, Any]:
 
 @mcp.tool()
 def dev_health_all(workspace: str = ".") -> dict[str, Any]:
-    """Scan subdirectories for ecosystems and run comprehensive health checks on all of them.
-    Returns detailed per-ecosystem reports including: health score, runtime versions, dependency state,
-    required services, issues, and recommendations. Perfect for monorepos with multiple tech stacks."""
+    """Scan the workspace root and its subdirectories for ecosystems and run a
+    health check on each. Returns detailed per-ecosystem reports including: health
+    score, runtime versions, dependency state, required services, issues, and
+    recommendations. Perfect for monorepos with multiple tech stacks."""
     root = _resolve(workspace)
     if not root.exists():
         return _result(Status.ERROR, f"Workspace '{workspace}' does not exist.")
 
-    ecosystems_to_check = []
-
-    for subdir in COMMON_MONOREPO_DIRS:
-        path = root / subdir
-        if path.is_dir():
-            profile = detect_project(str(path))
-            if profile.ecosystems:
-                ecosystems_to_check.append((subdir, path, profile.ecosystems))
+    # Same scanner dev_build_all uses, so the two never disagree about which
+    # directories this repository has -- including the root itself.
+    ecosystems_to_check = _scan_build_targets(root)
 
     if not ecosystems_to_check:
-        return _result(Status.UNKNOWN, "No recognized ecosystems found in subdirectories.", data={"ecosystems": []})
+        return _result(
+            Status.UNKNOWN,
+            "No recognized ecosystems found in the workspace root or its subdirectories.",
+            data={"ecosystems": []},
+        )
 
     results = []
     for dir_name, dir_path, ecosystems in ecosystems_to_check:
