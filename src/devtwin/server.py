@@ -155,9 +155,7 @@ def _select_commands(recognized: list[str], run: list[str] | None, budget: int) 
     return Selection(to_run, skipped, rejected, used)
 
 
-def _run_recognized_commands(
-    path: Path, commands: list[str], timeout: int
-) -> list[dict[str, Any]]:
+def _run_recognized_commands(path: Path, commands: list[str], timeout: int) -> list[dict[str, Any]]:
     """Execute an already-selected command list. Selection happens in
     :func:`_select_commands`; this only runs what it is given."""
     results: list[dict[str, Any]] = []
@@ -874,9 +872,7 @@ def dev_build_all(workspace: str = ".") -> dict[str, Any]:
         skipped = selection.skipped
         skipped_commands.extend(skipped)
 
-        build_results = _run_recognized_commands(
-            dir_path, selection.to_run, BUILD_TIMEOUT_SECONDS
-        )
+        build_results = _run_recognized_commands(dir_path, selection.to_run, BUILD_TIMEOUT_SECONDS)
         ob = _partition_results(build_results)
         # The budget exists to bound wall-clock time, so only builds that
         # actually ran spend it. Charging for a command the allowlist refused
@@ -984,20 +980,22 @@ def dev_health_all(workspace: str = ".") -> dict[str, Any]:
     results = []
     for dir_name, dir_path, ecosystems in ecosystems_to_check:
         report = compute_health(str(dir_path))
-        results.append({
-            "directory": dir_name,
-            "ecosystems": ecosystems,
-            "health_score": report.health_score,
-            "status": report.status.value,
-            "project_summary": report.project_summary,
-            "runtime_summary": report.runtime_summary,
-            "dependency_summary": report.dependency_summary,
-            "service_summary": report.service_summary,
-            "issues": [i.to_dict() for i in report.issues],
-            "issue_count": len(report.issues),
-            "recommendations": report.recommendations,
-            "recommendation_count": len(report.recommendations),
-        })
+        results.append(
+            {
+                "directory": dir_name,
+                "ecosystems": ecosystems,
+                "health_score": report.health_score,
+                "status": report.status.value,
+                "project_summary": report.project_summary,
+                "runtime_summary": report.runtime_summary,
+                "dependency_summary": report.dependency_summary,
+                "service_summary": report.service_summary,
+                "issues": [i.to_dict() for i in report.issues],
+                "issue_count": len(report.issues),
+                "recommendations": report.recommendations,
+                "recommendation_count": len(report.recommendations),
+            }
+        )
 
     # Aggregate status: ERROR if any subdirectory has ERROR, WARNING if any has WARNING, else OK
     if any(r["status"] == "error" for r in results):

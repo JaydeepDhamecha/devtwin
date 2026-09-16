@@ -121,7 +121,9 @@ def test_inspect_tests_spm_only(monkeypatch, fixtures_root: Path):
 
 def test_inspect_build_commands_spm(fixtures_root: Path):
     adapter = SwiftAdapter()
-    assert adapter.inspect_build_commands(fixtures_root / "swift" / "spm-project") == ["swift build"]
+    assert adapter.inspect_build_commands(fixtures_root / "swift" / "spm-project") == [
+        "swift build"
+    ]
 
 
 def test_inspect_build_commands_xcode_no_scheme(monkeypatch, fixtures_root: Path):

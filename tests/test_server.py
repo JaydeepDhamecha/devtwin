@@ -175,9 +175,7 @@ def _fake_passing_run(monkeypatch) -> list[list[str]]:
 
     def fake_run_command(args, cwd=None, timeout=None):
         invocations.append(args)
-        return CommandResult(
-            executable=args[0], args=args, returncode=0, stdout="built", stderr=""
-        )
+        return CommandResult(executable=args[0], args=args, returncode=0, stdout="built", stderr="")
 
     monkeypatch.setattr("devtwin.server.run_command", fake_run_command)
     return invocations
@@ -402,7 +400,9 @@ def test_dev_build_all_directory_status_accounts_for_skipped(tmp_path: Path, mon
     _inject_adapter(
         monkeypatch,
         per_dir={
-            first: {"build": [f"npm run build{i}" for i in range(server.MAX_AUTO_BUILD_COMMANDS + 2)]}
+            first: {
+                "build": [f"npm run build{i}" for i in range(server.MAX_AUTO_BUILD_COMMANDS + 2)]
+            }
         },
     )
     _fake_passing_run(monkeypatch)
