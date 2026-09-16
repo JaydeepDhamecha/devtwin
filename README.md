@@ -592,6 +592,30 @@ Full details: [`docs/security.md`](docs/security.md).
   network. It runs at most once per adapter run and is the only read-only path
   that is not purely a file read.
 
+## MCPHub plugin
+
+DevTwin is also packaged as an MCPHub plugin in [`mcphub/devtwin/`](mcphub/devtwin/) —
+a TypeScript port of this server that satisfies the MCPHub plugin contract
+(18 tools under the `devtwin_` prefix, pricing tiers, config schema, action
+plans, SKILL.md). It exists for teams who consume tools through
+`mcphub.indianic.in` rather than a local `.mcp.json`.
+
+```bash
+cd mcphub/devtwin
+npm install && npm run verify && npm run smoke
+```
+
+The two distributions are not interchangeable. This Python server runs on the
+developer's machine and reports that machine. The plugin runs on MCPHub's
+server, so its live-state tools (`devtwin_services`, `devtwin_drift`,
+`devtwin_check`, `devtwin_build`) describe the server they execute on; its
+file-based tools (`devtwin_detect`, `devtwin_project_info`,
+`devtwin_dependencies`, `devtwin_precommit`) read the workspace and are correct
+either way. See [`mcphub/devtwin/README.md`](mcphub/devtwin/README.md) for the
+full list of hosted-execution differences.
+
+For local use, keep using this server.
+
 ## Adoption & team setup
 
 **For team leads:** See [`ADOPTION.md`](ADOPTION.md) for per-project setup, FAQ, and how to announce DevTwin to your team.

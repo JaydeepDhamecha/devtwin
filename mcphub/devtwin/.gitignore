@@ -1,0 +1,4 @@
+node_modules/
+.verify-build/
+.smoke-build/
+.regress-build/
